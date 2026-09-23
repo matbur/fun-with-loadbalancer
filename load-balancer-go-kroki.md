@@ -71,12 +71,12 @@ type Pool struct {
 
 ## 6. Transport i timeouty
 
-- [ ] Jeden współdzielony `http.Transport` (nie `http.Client` na request)
-- [ ] `Dialer`: `Timeout: 2s`, `KeepAlive: 30s`
-- [ ] `MaxIdleConns: 100`, `MaxIdleConnsPerHost: 20`, `MaxConnsPerHost: 100`, `IdleConnTimeout: 90s`
-- [ ] `TLSHandshakeTimeout: 2s`, `ResponseHeaderTimeout: 5s`, `ExpectContinueTimeout: 1s`
-- [ ] Przypisz transport do proxy
-- [ ] Nie ustawiaj jednego globalnego timeoutu na całą odpowiedź
+- [x] Jeden współdzielony `http.Transport` (nie `http.Client` na request)
+- [x] `Dialer`: `Timeout: 2s`, `KeepAlive: 30s`
+- [x] `MaxIdleConns: 100`, `MaxIdleConnsPerHost: 20`, `MaxConnsPerHost: 100`, `IdleConnTimeout: 90s`
+- [x] `TLSHandshakeTimeout: 2s`, `ResponseHeaderTimeout: 5s`, `ExpectContinueTimeout: 1s`
+- [x] Przypisz transport do proxy
+- [x] Nie ustawiaj jednego globalnego timeoutu na całą odpowiedź
 
 ## 7. Błędy i retry
 

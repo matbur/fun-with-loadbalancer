@@ -14,7 +14,15 @@ type Backend struct {
 	Healthy atomic.Bool
 }
 
-func NewBackend(rawURL string) (*Backend, error) {
+type BackendOption func(*Backend)
+
+func WithTransport(rt http.RoundTripper) BackendOption {
+	return func(b *Backend) {
+		b.Proxy.Transport = rt
+	}
+}
+
+func NewBackend(rawURL string, opts ...BackendOption) (*Backend, error) {
 	target, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
@@ -38,6 +46,10 @@ func NewBackend(rawURL string) (*Backend, error) {
 		URL:   target,
 		Proxy: proxy,
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+
 	b.Healthy.Store(true)
 
 	return b, nil

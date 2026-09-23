@@ -2,10 +2,12 @@ package proxy
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,4 +105,28 @@ func TestServeHTTPRoundRobinsRequests(t *testing.T) {
 
 	assert.Equal(t, int32(total/2), count1.Load())
 	assert.Equal(t, int32(total/2), count2.Load())
+}
+
+func TestServeHTTPBackendHeaderTimeoutReturns502(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+	}))
+	defer backend.Close()
+
+	tr := &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: time.Second}).DialContext,
+		ResponseHeaderTimeout: 50 * time.Millisecond,
+	}
+	b, err := balancer.NewBackend(backend.URL, balancer.WithTransport(tr))
+	require.NoError(t, err)
+
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}))
+
+	start := time.Now()
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Less(t, time.Since(start), 400*time.Millisecond)
 }

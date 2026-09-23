@@ -31,6 +31,21 @@ func mustBackend(t *testing.T, rawURL string) *balancer.Backend {
 	return b
 }
 
+func TestCheckerWithTransport(t *testing.T) {
+	var healthy atomic.Bool
+	healthy.Store(true)
+	srv := newToggleServer(&healthy)
+	defer srv.Close()
+
+	b := mustBackend(t, srv.URL)
+	pool := balancer.NewPool([]*balancer.Backend{b})
+
+	tr := balancer.NewTransport()
+	c := New(pool, WithTransport(tr))
+
+	assert.Same(t, tr, c.client.Transport)
+}
+
 func TestCheckerStaysHealthyWhenBackendUp(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
@@ -147,8 +162,7 @@ func TestCheckerRunTogglesHealth(t *testing.T) {
 
 	c := New(pool, WithInterval(20*time.Millisecond), WithTimeout(200*time.Millisecond))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go c.Run(ctx)
 
 	healthy.Store(false)

@@ -58,6 +58,10 @@ func WithTimeout(d time.Duration) Option {
 	return func(c *Checker) { c.timeout = d }
 }
 
+func WithTransport(rt http.RoundTripper) Option {
+	return func(c *Checker) { c.client.Transport = rt }
+}
+
 func (c *Checker) Run(ctx context.Context) {
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()

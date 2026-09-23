@@ -19,8 +19,9 @@ func main() {
 	}
 
 	backends := make([]*balancer.Backend, 0, len(cfg.Backends))
+	transport := balancer.NewTransport()
 	for _, rawURL := range cfg.Backends {
-		b, err := balancer.NewBackend(rawURL)
+		b, err := balancer.NewBackend(rawURL, balancer.WithTransport(transport))
 		if err != nil {
 			log.Fatalf("backend %q: %v", rawURL, err)
 		}
@@ -33,6 +34,7 @@ func main() {
 		pool,
 		health.WithInterval(cfg.HealthCheckEvery),
 		health.WithTimeout(cfg.HealthCheckTimeout),
+		health.WithTransport(transport),
 	)
 	go checker.Run(context.Background())
 
