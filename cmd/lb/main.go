@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 
 	"fun-with-loadbalancer/internal/balancer"
 	"fun-with-loadbalancer/internal/config"
+	"fun-with-loadbalancer/internal/health"
 	"fun-with-loadbalancer/internal/proxy"
 )
 
@@ -26,6 +28,14 @@ func main() {
 	}
 
 	pool := balancer.NewPool(backends)
+
+	checker := health.New(
+		pool,
+		health.WithInterval(cfg.HealthCheckEvery),
+		health.WithTimeout(cfg.HealthCheckTimeout),
+	)
+	go checker.Run(context.Background())
+
 	server := proxy.NewServer(pool)
 
 	log.Printf("listening on %s", cfg.ListenAddr)

@@ -8,9 +8,10 @@ import (
 )
 
 type Config struct {
-	ListenAddr       string
-	Backends         []string
-	HealthCheckEvery time.Duration
+	ListenAddr         string
+	Backends           []string
+	HealthCheckEvery   time.Duration
+	HealthCheckTimeout time.Duration
 }
 
 func Parse(args []string) (Config, error) {
@@ -19,10 +20,12 @@ func Parse(args []string) (Config, error) {
 	var listen string
 	var backendsStr string
 	var healthCheckEvery time.Duration
+	var healthCheckTimeout time.Duration
 
 	fs.StringVar(&listen, "listen", ":8080", "address to listen on")
 	fs.StringVar(&backendsStr, "backends", "", "comma-separated backend URLs")
 	fs.DurationVar(&healthCheckEvery, "health-check-every", 10*time.Second, "health check interval")
+	fs.DurationVar(&healthCheckTimeout, "health-check-timeout", 2*time.Second, "health check per-backend timeout")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -37,9 +40,10 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:       listen,
-		Backends:         backends,
-		HealthCheckEvery: healthCheckEvery,
+		ListenAddr:         listen,
+		Backends:           backends,
+		HealthCheckEvery:   healthCheckEvery,
+		HealthCheckTimeout: healthCheckTimeout,
 	}
 
 	if cfg.ListenAddr == "" {

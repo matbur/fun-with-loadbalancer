@@ -62,12 +62,12 @@ type Pool struct {
 
 ## 5. Health checker
 
-- [ ] Pętla z `time.Ticker` + `select` na `ctx.Done()` (bez nowej goroutine na tick)
-- [ ] Krótki timeout na pojedynczy check
-- [ ] `GET /healthz`, odczytaj max 4 KiB body, zamknij body
-- [ ] Aktualizuj `Healthy` bez blokowania obsługi requestów
-- [ ] Progi: `failureThreshold = 3`, `successThreshold = 2`, osobne liczniki (hysteresis przeciw flappingowi)
-- [ ] Checker zamykany przez kontekst
+- [x] Pętla z `time.Ticker` + `select` na `ctx.Done()` (bez nowej goroutine na tick)
+- [x] Krótki timeout na pojedynczy check
+- [x] `GET /healthz`, odczytaj max 4 KiB body, zamknij body
+- [x] Aktualizuj `Healthy` bez blokowania obsługi requestów
+- [x] Progi: `failureThreshold = 3`, `successThreshold = 2`, osobne liczniki (hysteresis przeciw flappingowi)
+- [x] Checker zamykany przez kontekst
 
 ## 6. Transport i timeouty
 

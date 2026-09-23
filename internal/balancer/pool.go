@@ -13,6 +13,10 @@ func NewPool(backends []*Backend) *Pool {
 	return p
 }
 
+func (p *Pool) Backends() []*Backend {
+	return append([]*Backend(nil), p.backends.Load().([]*Backend)...)
+}
+
 func (p *Pool) Next() *Backend {
 	backends := p.backends.Load().([]*Backend)
 	if len(backends) == 0 {
