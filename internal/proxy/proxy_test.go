@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,4 +71,36 @@ func TestServeHTTPBackendFailureReturns502(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+func TestServeHTTPRoundRobinsRequests(t *testing.T) {
+	var count1, count2 atomic.Int32
+
+	backend1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count1.Add(1)
+	}))
+	defer backend1.Close()
+
+	backend2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count2.Add(1)
+	}))
+	defer backend2.Close()
+
+	b1, err := balancer.NewBackend(backend1.URL)
+	require.NoError(t, err)
+	b2, err := balancer.NewBackend(backend2.URL)
+	require.NoError(t, err)
+
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b1, b2}))
+
+	const total = 10
+	for i := 0; i < total; i++ {
+		req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	assert.Equal(t, int32(total/2), count1.Load())
+	assert.Equal(t, int32(total/2), count2.Load())
 }

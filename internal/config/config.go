@@ -29,7 +29,7 @@ func Parse(args []string) (Config, error) {
 	}
 
 	var backends []string
-	for _, rawURL := range strings.Split(backendsStr, ",") {
+	for rawURL := range strings.SplitSeq(backendsStr, ",") {
 		rawURL = strings.TrimSpace(rawURL)
 		if rawURL != "" {
 			backends = append(backends, rawURL)

@@ -50,15 +50,15 @@ type Pool struct {
 
 ## 3. Lista backendów + round-robin
 
-- [ ] Wczytaj listę backendów z flag/pliku
-- [ ] Zaimplementuj `Pool.Next()` z atomowym licznikiem (`atomic.Uint64`) — bez zwykłego `pool.next++`
-- [ ] Iteruj po wszystkich backendach od pozycji startowej i zwróć pierwszy zdrowy
-- [ ] Zabezpiecz pustą listę (modulo przez zero)
+- [x] Wczytaj listę backendów z flag/pliku
+- [x] Zaimplementuj `Pool.Next()` z atomowym licznikiem (`atomic.Uint64`) — bez zwykłego `pool.next++`
+- [x] Iteruj po wszystkich backendach od pozycji startowej i zwróć pierwszy zdrowy
+- [x] Zabezpiecz pustą listę (modulo przez zero)
 
 ## 4. Pomijanie niezdrowych backendów
 
-- [ ] Flaga `Healthy` per backend (`atomic.Bool`)
-- [ ] `Next()` pomija backendy z `Healthy == false`
+- [x] Flaga `Healthy` per backend (`atomic.Bool`)
+- [x] `Next()` pomija backendy z `Healthy == false`
 
 ## 5. Health checker
 

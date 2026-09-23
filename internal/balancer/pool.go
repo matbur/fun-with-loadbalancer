@@ -15,10 +15,18 @@ func NewPool(backends []*Backend) *Pool {
 
 func (p *Pool) Next() *Backend {
 	backends := p.backends.Load().([]*Backend)
-	for _, b := range backends {
-		if b.Healthy.Load() {
-			return b
+	if len(backends) == 0 {
+		return nil
+	}
+
+	start := p.next.Add(1)
+
+	for i := uint64(0); i < uint64(len(backends)); i++ {
+		candidate := backends[(start+i)%uint64(len(backends))]
+		if candidate.Healthy.Load() {
+			return candidate
 		}
 	}
+
 	return nil
 }
