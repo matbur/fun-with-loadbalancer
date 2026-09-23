@@ -14,7 +14,7 @@ Checklist do zaimplementowania poprawnego HTTP reverse round-robin load balancer
 
 ## 1. Szkielet projektu
 
-- [ ] Utwórz strukturę:
+- [x] Utwórz strukturę:
 
 ```text
 cmd/lb/main.go
@@ -25,7 +25,7 @@ internal/proxy/proxy.go
 internal/health/checker.go
 ```
 
-- [ ] Zdefiniuj model danych:
+- [x] Zdefiniuj model danych:
 
 ```go
 type Backend struct {
