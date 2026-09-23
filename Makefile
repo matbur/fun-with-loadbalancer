@@ -1,7 +1,8 @@
 BACKENDS ?= http://localhost:9001,http://localhost:9002
 LISTEN ?= :8080
+BACKEND_PORT ?= 9001
 
-.PHONY: help run test test-race vet
+.PHONY: help run backend test test-race vet
 
 help: ## show available targets
 	@printf "Available targets:\n"
@@ -9,6 +10,9 @@ help: ## show available targets
 
 run: ## run the load balancer
 	go run ./cmd/lb -backends "$(BACKENDS)" -listen "$(LISTEN)"
+
+backend: ## run a test backend
+	go run ./cmd/backend -port $(BACKEND_PORT)
 
 test: ## run all tests
 	go test ./...

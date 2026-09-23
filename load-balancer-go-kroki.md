@@ -42,11 +42,11 @@ type Pool struct {
 
 ## 2. Jeden backend + reverse proxy
 
-- [ ] Sparsuj URL backendu i zwróć błąd, jeśli parsowanie się nie powiedzie
-- [ ] Utwórz `httputil.NewSingleHostReverseProxy` raz na backend (nie na request)
-- [ ] Dostosuj `Director`/`Rewrite` — ustawiaj `X-Forwarded-Host`, `X-Forwarded-Proto`; nie ufaj klientowskim `X-Forwarded-*`
-- [ ] Ustaw `ErrorHandler` zwracający `502 Bad Gateway`
-- [ ] Napisz handler zwracający `503`, gdy `pool.Next()` zwróci `nil`
+- [x] Sparsuj URL backendu i zwróć błąd, jeśli parsowanie się nie powiedzie
+- [x] Utwórz `httputil.NewSingleHostReverseProxy` raz na backend (nie na request)
+- [x] Dostosuj `Director`/`Rewrite` — ustawiaj `X-Forwarded-Host`, `X-Forwarded-Proto`; nie ufaj klientowskim `X-Forwarded-*`
+- [x] Ustaw `ErrorHandler` zwracający `502 Bad Gateway`
+- [x] Napisz handler zwracający `503`, gdy `pool.Next()` zwróci `nil`
 
 ## 3. Lista backendów + round-robin
 
