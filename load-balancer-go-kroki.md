@@ -4,13 +4,13 @@ Checklist do zaimplementowania poprawnego HTTP reverse round-robin load balancer
 
 ## 0. Założenia (opisz w README)
 
-- [ ] HTTP (nie TCP/L4), balansowanie na poziomie requestu (nie połączenia TCP)
-- [ ] Algorytm: round-robin
-- [ ] Backend może być chwilowo niedostępny → health check `GET /healthz`
-- [ ] Timeout requestu + transport z connection poolingiem
-- [ ] Brak retry dla metod nieidempotentnych (`POST`/`PUT`/`PATCH`)
-- [ ] Konfiguracja przez flagi lub plik
-- [ ] Graceful shutdown po `SIGTERM`/`SIGINT`
+- [x] HTTP (nie TCP/L4), balansowanie na poziomie requestu (nie połączenia TCP)
+- [x] Algorytm: round-robin
+- [x] Backend może być chwilowo niedostępny → health check `GET /healthz`
+- [x] Timeout requestu + transport z connection poolingiem
+- [x] Brak retry dla metod nieidempotentnych (`POST`/`PUT`/`PATCH`)
+- [x] Konfiguracja przez flagi lub plik
+- [x] Graceful shutdown po `SIGTERM`/`SIGINT`
 
 ## 1. Szkielet projektu
 
