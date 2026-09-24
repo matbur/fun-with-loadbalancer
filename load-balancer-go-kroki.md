@@ -95,17 +95,17 @@ type Pool struct {
 
 ## 9. Testy
 
-- [ ] Używaj `httptest.Server` zamiast prawdziwych procesów
-- [ ] Round-robin rozdziela requesty po równo
-- [ ] Pusta pula → `503`
-- [ ] Niezdrowy backend jest pomijany
-- [ ] Backend wraca po ponownym health checku
-- [ ] Błąd backendu → `502`
-- [ ] Timeout backendu nie zawiesza LB
-- [ ] Równoległe requesty bez race condition
-- [ ] Graceful shutdown kończy pracę
-- [ ] Nagłówki i ścieżka przekazywane poprawnie
-- [ ] Uruchom: `go test ./...`, `go test -race ./...`, `go vet ./...`, `go test -run TestLoadBalancer -count=50 ./...`
+- [x] Używaj `httptest.Server` zamiast prawdziwych procesów
+- [x] Round-robin rozdziela requesty po równo
+- [x] Pusta pula → `503`
+- [x] Niezdrowy backend jest pomijany
+- [x] Backend wraca po ponownym health checku
+- [x] Błąd backendu → `502`
+- [x] Timeout backendu nie zawiesza LB
+- [x] Równoległe requesty bez race condition
+- [x] Graceful shutdown kończy pracę
+- [x] Nagłówki i ścieżka przekazywane poprawnie
+- [x] Uruchom: `go test ./...`, `go test -race ./...`, `go vet ./...` oraz `make test-repeat` (50 powtórzeń)
 
 ## 10. Kolejność prac
 
