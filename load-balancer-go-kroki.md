@@ -87,11 +87,11 @@ type Pool struct {
 
 ## 8. Graceful shutdown
 
-- [ ] `http.Server` z `ReadTimeout`, `ReadHeaderTimeout`, `WriteTimeout`, `IdleTimeout`
-- [ ] `signal.NotifyContext` na `SIGINT`/`SIGTERM`
-- [ ] `server.Shutdown` z timeoutem (np. 10s) w osobnej goroutine
-- [ ] Zatrzymanie health checker'a (anulowanie kontekstu)
-- [ ] Zamknięcie idle connections transportu
+- [x] `http.Server` z `ReadTimeout`, `ReadHeaderTimeout`, `WriteTimeout`, `IdleTimeout`
+- [x] `signal.NotifyContext` na `SIGINT`/`SIGTERM`
+- [x] `server.Shutdown` z timeoutem (np. 10s) w osobnej goroutine
+- [x] Zatrzymanie health checker'a (anulowanie kontekstu)
+- [x] Zamknięcie idle connections transportu
 
 ## 9. Testy
 
