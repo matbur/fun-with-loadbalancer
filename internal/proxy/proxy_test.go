@@ -107,7 +107,7 @@ func TestServeHTTPRoundRobinsRequests(t *testing.T) {
 	assert.Equal(t, int32(total/2), count2.Load())
 }
 
-func TestServeHTTPBackendHeaderTimeoutReturns502(t *testing.T) {
+func TestServeHTTPBackendHeaderTimeoutReturns504(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 	}))
@@ -127,6 +127,75 @@ func TestServeHTTPBackendHeaderTimeoutReturns502(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
 	assert.Less(t, time.Since(start), 400*time.Millisecond)
+}
+
+func TestServeHTTPRetriesIdempotentRequest(t *testing.T) {
+	var goodCount atomic.Int32
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodCount.Add(1)
+		fmt.Fprint(w, "good")
+	}))
+	defer good.Close()
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	bad.Close()
+
+	bGood, err := balancer.NewBackend(good.URL)
+	require.NoError(t, err)
+	bBad, err := balancer.NewBackend(bad.URL)
+	require.NoError(t, err)
+
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{bGood, bBad}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, int32(1), goodCount.Load())
+}
+
+func TestServeHTTPDoesNotRetryPOST(t *testing.T) {
+	var goodCount atomic.Int32
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		goodCount.Add(1)
+	}))
+	defer good.Close()
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	bad.Close()
+
+	bGood, err := balancer.NewBackend(good.URL)
+	require.NoError(t, err)
+	bBad, err := balancer.NewBackend(bad.URL)
+	require.NoError(t, err)
+
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{bGood, bBad}))
+
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, int32(0), goodCount.Load())
+}
+
+func TestServeHTTPPassesThroughUpstream500(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }

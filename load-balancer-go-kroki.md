@@ -80,10 +80,10 @@ type Pool struct {
 
 ## 7. Błędy i retry
 
-- [ ] Brak backendu → `503 Service Unavailable`
-- [ ] Błąd połączenia → `502 Bad Gateway`
-- [ ] Timeout backendu → `504 Gateway Timeout`
-- [ ] Retry tylko dla `GET`/`HEAD` (i ewentualnie `OPTIONS`), max 2 próby, z omijaniem padającego backendu — albo jawnie zadeklaruj brak retry w README
+- [x] Brak backendu → `503 Service Unavailable`
+- [x] Błąd połączenia → `502 Bad Gateway`
+- [x] Timeout backendu → `504 Gateway Timeout`
+- [x] Retry tylko dla `GET`/`HEAD` (i ewentualnie `OPTIONS`), max 2 próby, z omijaniem padającego backendu — albo jawnie zadeklaruj brak retry w README
 
 ## 8. Graceful shutdown
 

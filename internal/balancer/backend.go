@@ -1,7 +1,9 @@
 package balancer
 
 import (
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -22,6 +24,28 @@ func WithTransport(rt http.RoundTripper) BackendOption {
 	}
 }
 
+type upstreamErrorWriter interface {
+	UpstreamError(error)
+}
+
+func StatusCodeForError(err error) int {
+	if isTimeout(err) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusBadGateway
+}
+
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
 func NewBackend(rawURL string, opts ...BackendOption) (*Backend, error) {
 	target, err := url.Parse(rawURL)
 	if err != nil {
@@ -36,9 +60,13 @@ func NewBackend(rawURL string, opts ...BackendOption) (*Backend, error) {
 			pr.SetURL(target)
 			pr.SetXForwarded()
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			if uew, ok := w.(upstreamErrorWriter); ok {
+				uew.UpstreamError(err)
+				return
+			}
 			w.Header().Set("X-Content-Type-Options", "nosniff")
-			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+			http.Error(w, http.StatusText(StatusCodeForError(err)), StatusCodeForError(err))
 		},
 	}
 
