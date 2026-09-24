@@ -109,15 +109,15 @@ type Pool struct {
 
 ## 10. Kolejność prac
 
-1. [ ] Jeden backend i działający reverse proxy
-2. [ ] Lista backendów
-3. [ ] Round-robin z atomowym indeksem
-4. [ ] Pomijanie niezdrowych backendów
-5. [ ] Health checker
-6. [ ] Transport i timeouty
-7. [ ] Graceful shutdown
-8. [ ] Testy równoległe i `go test -race`
-9. [ ] Metryki i dokumentacja ograniczeń
+1. [x] Jeden backend i działający reverse proxy
+2. [x] Lista backendów
+3. [x] Round-robin z atomowym indeksem
+4. [x] Pomijanie niezdrowych backendów
+5. [x] Health checker
+6. [x] Transport i timeouty
+7. [x] Graceful shutdown
+8. [x] Testy równoległe i `go test -race`
+9. [x] Dokumentacja ograniczeń (README); metryki celowo oddelegowane do kroku 11 (opcjonalne)
 
 Nie zaczynaj od metryk, retry i dynamicznej konfiguracji — najpierw poprawny przepływ requestu.
 
