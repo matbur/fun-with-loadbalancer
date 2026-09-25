@@ -155,7 +155,7 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11h. Structured logging
 
-- [ ] Structured logging
+- [x] Structured logging — `log/slog` zamiast `log` (cmd/lb + cmd/backend); flagi `-log-format text|json` i `-log-level debug|info|warn|error` (+ klucze `log_format`/`log_level` w pliku konfiguracyjnym, walidacja w `config.Parse`); wpis startowy ze wszystkimi parametrami + `debug` per backend; access log w proxy przez nową opcję `WithLogger` (jeden wpis na request: `method`/`path`/`status`/`duration`/`backend`/`remote`, status ≥500 → `warn`; bez loggera proxy milczy); `trackingWriter` zapisuje status odpowiedzi; testy: walidacja configu (flagi + plik + nadpisywanie), budowa loggera (handler text/json, poziomy), access log w proxy (sukces, 503, 5xx, brak loggera) + README (sekcja „Logi")
 
 ### 11i. Limity body requestu i limit równoległych requestów
 

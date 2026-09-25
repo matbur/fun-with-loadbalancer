@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -474,4 +476,105 @@ func TestServeHTTPCircuitBreakerSkipsFailingBackend(t *testing.T) {
 	}
 	assert.Equal(t, int32(5), countB.Load()-before,
 		"open circuit: every request must be served by B in a single attempt")
+}
+
+// recordHandler is a minimal slog.Handler that collects records in memory,
+// so tests can assert on the structured access logs the server emits.
+type recordHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *recordHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordHandler) WithGroup(string) slog.Handler       { return h }
+
+func recordAttrs(r slog.Record) map[string]any {
+	attrs := make(map[string]any)
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	return attrs
+}
+
+func TestServeHTTPLogsSuccessfulRequest(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+
+	collector := &recordHandler{}
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithLogger(slog.New(collector)))
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/hello", nil))
+
+	require.Len(t, collector.records, 1, "one access log line per request")
+	assert.Equal(t, "request", collector.records[0].Message)
+	assert.Equal(t, slog.LevelInfo, collector.records[0].Level)
+
+	attrs := recordAttrs(collector.records[0])
+	assert.Equal(t, "GET", attrs["method"])
+	assert.Equal(t, "/hello", attrs["path"])
+	assert.Equal(t, int64(200), attrs["status"])
+	assert.Equal(t, b.URL.Host, attrs["backend"])
+	_, ok := attrs["duration"].(time.Duration)
+	assert.True(t, ok, "duration must be logged as a duration")
+}
+
+func TestServeHTTPWithoutLoggerStaysSilent(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}))
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestServeHTTPLogsNoBackendsAsWarn(t *testing.T) {
+	collector := &recordHandler{}
+	srv := NewServer(balancer.NewPool(nil), WithLogger(slog.New(collector)))
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+
+	require.Len(t, collector.records, 1)
+	assert.Equal(t, slog.LevelWarn, collector.records[0].Level)
+	assert.Equal(t, int64(http.StatusServiceUnavailable), recordAttrs(collector.records[0])["status"])
+}
+
+func TestServeHTTPLogsBackend5xxAsWarn(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+
+	collector := &recordHandler{}
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithLogger(slog.New(collector)))
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+
+	require.Len(t, collector.records, 1)
+	assert.Equal(t, slog.LevelWarn, collector.records[0].Level)
+	assert.Equal(t, int64(http.StatusInternalServerError), recordAttrs(collector.records[0])["status"])
+	assert.Equal(t, b.URL.Host, recordAttrs(collector.records[0])["backend"])
 }

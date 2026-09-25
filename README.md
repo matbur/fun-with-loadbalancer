@@ -11,7 +11,8 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 - **Health check**: okresowe `GET /healthz` na każdym backendzie, z krótkim timeoutem.
 - **Request timeout i transport z connection poolingiem** — współdzielony `http.Transport`, świadome wartości timeoutów (dial, response header, idle).
 - **Brak retry dla metod nieidempotentnych** (`POST`, `PUT`, `PATCH`) — retry tylko dla `GET`/`HEAD`/`OPTIONS`, `maxAttempts = 2`, kolejna próba omija padający backend.
-- **Konfiguracja przez flagi lub plik YAML/JSON** (`-config`; flagi nadpisują plik) — lista backendów, adres listen, algorytm, wagi, breaker, interwały health checka.
+- **Konfiguracja przez flagi lub plik YAML/JSON** (`-config`; flagi nadpisują plik) — lista backendów, adres listen, algorytm, wagi, breaker, logowanie, interwały health checka.
+- **Structured logging** (`log/slog`) — format `text`/`json` i poziom wybierane flagami; access log per request (method, path, status, duration, backend), odpowiedzi ≥500 jako warn; bez loggera proxy milczy.
 - **Graceful shutdown po `SIGTERM`/`SIGINT`** — dokończenie trwających requestów, zatrzymanie health checker'a.
 
 ## Błędy i retry
@@ -97,6 +98,29 @@ Endpointy dla orchestratorów (np. Kubernetes liveness/readiness probes):
 
 `/ready` to **pasywny odczyt** (`Pool.Ready()`): w przeciwieństwie do `Available()` nie powoduje przejścia open → half-open na breakerze — samo sondowanie readiness nie zmienia stanu obwodu (test `TestReadyDoesNotTripBreaker`).
 
+## Logi (structured logging)
+
+Logi oparte na standardowym `log/slog` — format i poziom konfigurowane flagami (`-log-format text|json`, `-log-level debug|info|warn|error`) lub kluczami `log_format`/`log_level` w pliku konfiguracyjnym.
+
+- **Start**: jeden wpis z pełną konfiguracją (`listen`, `algorithm`, liczba backendów, health check, breaker), plus wpis `debug` per backend (`url`, `weight`).
+- **Access log**: jeden wpis na request — `method`, `path`, `status`, `duration`, `backend` (i `remote`). Odpowiedzi ≥500 trafiają na poziom `warn`, reszta na `info`.
+- **Cykl życia**: `listening`, `shutting down`, błędy serwera.
+
+Przykład z logami JSON:
+
+```bash
+go run ./cmd/lb -backends http://localhost:9001,http://localhost:9002 \
+  -log-format json
+```
+
+```json
+{"time":"...","level":"INFO","msg":"starting load balancer","listen":":8080","algorithm":"round-robin","backends":2}
+{"time":"...","level":"INFO","msg":"request","method":"GET","path":"/hello","status":200,"duration":123456,"backend":"localhost:9001"}
+{"time":"...","level":"WARN","msg":"request failed","method":"GET","path":"/","status":503,"duration":0}
+```
+
+Access log pochodzi z proxy przez opcję `WithLogger` — bez niej (np. w testach) proxy nie loguje niczego.
+
 ## Zakres
 
 W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends`), graceful shutdown, metryki Prometheus, testy.
@@ -137,6 +161,8 @@ go run ./cmd/lb \
   -weights 1,2                      # wagi per backend (opcjonalne; domyślnie 1)
   -breaker-threshold 3              # kolejne błędy transportu otwierające obwód
   -breaker-cooldown 5s              # czas otwarcia obwodu przed próbą
+  -log-format text                  # text | json
+  -log-level info                   # debug | info | warn | error
 ```
 
 Przykład z wagami i least-connections:

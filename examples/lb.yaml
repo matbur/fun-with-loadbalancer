@@ -34,3 +34,7 @@ health_check_timeout: 2s
 # Per-backend circuit breaker (transport errors only, not backend HTTP codes).
 breaker_threshold: 3   # consecutive transport errors that open the circuit; >= 1
 breaker_cooldown: 5s   # how long the circuit stays open before a retry
+
+# Structured logging (log/slog).
+log_format: text       # text | json
+log_level: info        # debug | info | warn | error

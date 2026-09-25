@@ -201,3 +201,48 @@ func TestParseConfigFileBadAlgorithm(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "unknown algorithm")
 }
+
+func TestParseLogDefaults(t *testing.T) {
+	cfg, err := Parse([]string{"-backends", "http://127.0.0.1:1"})
+	require.NoError(t, err)
+	assert.Equal(t, "text", cfg.LogFormat)
+	assert.Equal(t, "info", cfg.LogLevel)
+}
+
+func TestParseLogFlags(t *testing.T) {
+	cfg, err := Parse([]string{
+		"-backends", "http://127.0.0.1:1",
+		"-log-format", "json",
+		"-log-level", "debug",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "json", cfg.LogFormat)
+	assert.Equal(t, "debug", cfg.LogLevel)
+}
+
+func TestParseInvalidLogFormat(t *testing.T) {
+	_, err := Parse([]string{"-backends", "http://127.0.0.1:1", "-log-format", "xml"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "log format")
+}
+
+func TestParseInvalidLogLevel(t *testing.T) {
+	_, err := Parse([]string{"-backends", "http://127.0.0.1:1", "-log-level", "verbose"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "log level")
+}
+
+func TestParseConfigFileLogFields(t *testing.T) {
+	path := writeConfigFile(t, "lb.yaml", "log_format: json\nlog_level: debug\nbackends: [http://localhost:9001]\n")
+	cfg, err := Parse([]string{"-config", path})
+	require.NoError(t, err)
+	assert.Equal(t, "json", cfg.LogFormat)
+	assert.Equal(t, "debug", cfg.LogLevel)
+}
+
+func TestParseFlagsOverrideConfigLogFields(t *testing.T) {
+	path := writeConfigFile(t, "lb.yaml", "log_format: json\nbackends: [http://localhost:9001]\n")
+	cfg, err := Parse([]string{"-config", path, "-log-format", "text"})
+	require.NoError(t, err)
+	assert.Equal(t, "text", cfg.LogFormat)
+}

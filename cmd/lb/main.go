@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -46,11 +46,25 @@ func backendOptions(cfg config.Config, transport *http.Transport, weight int) []
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		slog.Error("invalid configuration", "error", err)
+		os.Exit(1)
 	}
+
+	logger := newLogger(cfg.LogFormat, cfg.LogLevel)
+	slog.SetDefault(logger)
 
 	transport := balancer.NewTransport()
 	m := metrics.New()
+
+	logger.Info("starting load balancer",
+		"listen", cfg.ListenAddr,
+		"algorithm", cfg.Algorithm,
+		"backends", len(cfg.Backends),
+		"health_check_every", cfg.HealthCheckEvery,
+		"health_check_timeout", cfg.HealthCheckTimeout,
+		"breaker_threshold", cfg.BreakerThreshold,
+		"breaker_cooldown", cfg.BreakerCooldown,
+	)
 
 	backends := make([]*balancer.Backend, 0, len(cfg.Backends))
 	for i, rawURL := range cfg.Backends {
@@ -60,8 +74,10 @@ func main() {
 		}
 		b, err := balancer.NewBackend(rawURL, backendOptions(cfg, transport, weight)...)
 		if err != nil {
-			log.Fatalf("backend %q: %v", rawURL, err)
+			logger.Error("invalid backend", "url", rawURL, "error", err)
+			os.Exit(1)
 		}
+		logger.Debug("backend registered", "url", rawURL, "weight", weight)
 		backends = append(backends, b)
 	}
 	pool := balancer.NewPool(backends, balancer.WithAlgorithm(algorithmFromConfig(cfg.Algorithm)))
@@ -81,7 +97,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())
-	mux.Handle("/", m.Wrap(proxy.NewServer(pool, proxy.WithMetrics(m))))
+	mux.Handle("/", m.Wrap(proxy.NewServer(pool, proxy.WithMetrics(m), proxy.WithLogger(logger))))
 	mux.HandleFunc("GET /backends", admin.list)
 	mux.HandleFunc("POST /backends", admin.add)
 	mux.HandleFunc("DELETE /backends", admin.remove)
@@ -99,18 +115,19 @@ func main() {
 
 	go func() {
 		<-ctx.Done()
-		log.Print("shutting down")
+		logger.Info("shutting down")
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("shutdown: %v", err)
+			logger.Error("shutdown failed", "error", err)
 		}
 	}()
 
-	log.Printf("listening on %s", cfg.ListenAddr)
+	logger.Info("listening", "addr", cfg.ListenAddr)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("server: %v", err)
+		logger.Error("server error", "error", err)
+		os.Exit(1)
 	}
 }

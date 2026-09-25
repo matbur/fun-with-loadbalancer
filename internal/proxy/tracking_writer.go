@@ -15,6 +15,7 @@ type trackingWriter struct {
 	real        http.ResponseWriter
 	wroteHeader bool
 	err         error
+	status      int
 }
 
 func newTrackingWriter(real http.ResponseWriter) *trackingWriter {
@@ -27,10 +28,14 @@ func (w *trackingWriter) Header() http.Header {
 
 func (w *trackingWriter) WriteHeader(code int) {
 	w.wroteHeader = true
+	w.status = code
 	w.real.WriteHeader(code)
 }
 
 func (w *trackingWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
 	w.wroteHeader = true
 	return w.real.Write(p)
 }
@@ -60,4 +65,5 @@ func (w *trackingWriter) Unwrap() http.ResponseWriter {
 func (w *trackingWriter) reset() {
 	w.wroteHeader = false
 	w.err = nil
+	w.status = 0
 }

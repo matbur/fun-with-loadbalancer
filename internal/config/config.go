@@ -26,6 +26,10 @@ type Config struct {
 
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
+
+	// LogFormat is one of text, json; LogLevel one of debug, info, warn, error.
+	LogFormat string
+	LogLevel  string
 }
 
 // fileConfig mirrors Config for YAML/JSON files. Pointers and nil slices
@@ -41,6 +45,8 @@ type fileConfig struct {
 	Weights            []int    `json:"weights" yaml:"weights"`
 	BreakerThreshold   *int     `json:"breaker_threshold" yaml:"breaker_threshold"`
 	BreakerCooldown    *string  `json:"breaker_cooldown" yaml:"breaker_cooldown"`
+	LogFormat          *string  `json:"log_format" yaml:"log_format"`
+	LogLevel           *string  `json:"log_level" yaml:"log_level"`
 }
 
 func Parse(args []string) (Config, error) {
@@ -55,6 +61,8 @@ func Parse(args []string) (Config, error) {
 	var weightsStr string
 	var breakerThreshold int
 	var breakerCooldown time.Duration
+	var logFormat string
+	var logLevel string
 
 	fs.StringVar(&cfgFile, "config", "", "path to a YAML/JSON config file; explicitly set flags override file values")
 	fs.StringVar(&listen, "listen", ":8080", "address to listen on")
@@ -65,6 +73,8 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&weightsStr, "weights", "", "comma-separated backend weights (must match -backends count)")
 	fs.IntVar(&breakerThreshold, "breaker-threshold", 3, "consecutive transport failures before a backend's circuit opens")
 	fs.DurationVar(&breakerCooldown, "breaker-cooldown", 5*time.Second, "how long an open circuit stays open")
+	fs.StringVar(&logFormat, "log-format", "text", "log output format: text | json")
+	fs.StringVar(&logLevel, "log-level", "info", "log level: debug | info | warn | error")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -107,6 +117,8 @@ func Parse(args []string) (Config, error) {
 		if breakerCooldown, err = overlayDuration(set, "breaker_cooldown", breakerCooldown, fc.BreakerCooldown); err != nil {
 			return Config{}, err
 		}
+		logFormat = overlay(set, "log-format", logFormat, fc.LogFormat)
+		logLevel = overlay(set, "log-level", logLevel, fc.LogLevel)
 	}
 
 	cfg := Config{
@@ -118,6 +130,8 @@ func Parse(args []string) (Config, error) {
 		Weights:            weights,
 		BreakerThreshold:   breakerThreshold,
 		BreakerCooldown:    breakerCooldown,
+		LogFormat:          logFormat,
+		LogLevel:           logLevel,
 	}
 
 	if cfg.ListenAddr == "" {
@@ -137,6 +151,16 @@ func Parse(args []string) (Config, error) {
 	}
 	if len(cfg.Weights) > 0 && len(cfg.Weights) != len(cfg.Backends) {
 		return Config{}, fmt.Errorf("weights count (%d) must match backends count (%d)", len(cfg.Weights), len(cfg.Backends))
+	}
+	switch cfg.LogFormat {
+	case "text", "json":
+	default:
+		return Config{}, fmt.Errorf("unknown log format %q (allowed: text, json)", cfg.LogFormat)
+	}
+	switch cfg.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return Config{}, fmt.Errorf("unknown log level %q (allowed: debug, info, warn, error)", cfg.LogLevel)
 	}
 
 	return cfg, nil
