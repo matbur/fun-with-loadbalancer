@@ -160,3 +160,31 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 ### 11i. Limity body requestu i limit równoległych requestów
 
 - [x] Limity body requestu i limit równoległych requestów — flagi `-max-body-bytes` (domyślnie 1 MiB, `0` = bez limitu) i `-max-concurrent` (domyślnie `0` = bez limitu) (+ klucze `max_body_bytes`/`max_concurrent` w pliku konfiguracyjnym, walidacja w `config.Parse`); body: szybka ścieżka po `Content-Length` → 413, transfery o nieznanej długości przerywane przez `http.MaxBytesReader`, `*http.MaxBytesError` → 413 w `StatusCodeForError` — bez tripa breakera i bez retry; równoległość: tokenowy semafor w proxy (`WithMaxConcurrent`), przy pełnym limicie 503 + access log `warn`; limity dotyczą tylko ruchu proxowanego; testy: config (domyślne/flagi/plik/negatywy), proxy (413 po Content-Length i chunked, body w limicie przechodzi, brak limitu domyślnie, brak tripa breakera, 503 przy pełnym semaforze, 2 requesty w limicie 2, warn w access logu) + README (sekcja „Limity")
+
+## 12. Pomysły na dalszy rozwój (niezobowiązujące)
+
+Wszystkie kroki 0–11 są zrobione; poniżej kandydaci na kolejne etapy (11j+). Każdy niezależny i opcjonalny, realizowany osobno.
+
+### 12a. Sticky sessions / IP-hash (consistent hashing)
+
+- [ ] Sticky sessions / IP-hash — nowy algorytm w `Pool.Next()` (`AlgorithmIPHash`): deterministyczne trafianie requestów tego samego klienta (hash `RemoteAddr`) do tego samego backendu, z pomijaniem niezdrowych i otwartym obwodem; rozszerzenie enuma algorytmów + testy + README. Wariant trudniejszy: sticky po ciasteczku (`Set-Cookie` passthrough + walidacja).
+
+### 12b. Rate limiting per klient IP
+
+- [ ] Rate limiting per klient IP — token bucket per `RemoteAddr`, odrzucenie 429 po przekroczeniu limitu; wymaga mapy z mutexem + sprzątania wygasłych bucketów; dopełnienie limitów z 11i; flagi/klucze configu, testy + README.
+
+### 12c. Graceful drain przy usuwaniu backendu
+
+- [ ] Graceful drain przy `RemoveBackend` — usuwanie przestaje kierować na backend nowy ruch i czeka na zakończenie in-flight requestów (wykorzystanie istniejącego licznika `active` zamiast ucinania połączeń w połowie); testy + README.
+
+### 12d. TLS termination
+
+- [ ] TLS termination — flagi `-tls-cert`/`-tls-key`, `http.Server` z `TLSConfig`; obsługa HTTPS po stronie LB; testy + README.
+
+### 12e. Rozbudowa admina i metryk
+
+- [ ] Rozbudowa admina i metryk — `PATCH /backends` (zmiana wagi na żywo), `GET /backends` ze szczegółami (health, weight, active), histogram latency + gauge in-flight w `/metrics`; testy + README.
+
+### 12f. WebSocket / upgrade
+
+- [ ] WebSocket / upgrade — `trackingWriter` ma już `Hijack()`/`Flush()`, stdlib `ReverseProxy` obsługuje upgrade'y; przypięcie testem i dokumentacja w README.
