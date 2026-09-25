@@ -139,7 +139,7 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11d. Dynamiczne dodawanie/usuwanie backendów
 
-- [ ] Dynamiczne dodawanie/usuwanie backendów
+- [x] `Pool.AddBackend`/`RemoveBackend` (mutacja listy pod mutexem, atomowy snapshot; błędy `ErrDuplicateBackend`/`ErrBackendNotFound`); stan smooth WRR przeniesiony na `Backend.current` (zerowany przy usunięciu); health checker czyści stan usuniętych backendów; testy (w tym konkurencyjne add/remove) + README
 
 ### 11e. Circuit breaker
 

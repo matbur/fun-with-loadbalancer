@@ -51,6 +51,21 @@ backends := []*balancer.Backend{
 pool := balancer.NewPool(backends, balancer.WithAlgorithm(balancer.AlgorithmWeightedRoundRobin))
 ```
 
+## Dynamiczne backendy
+
+Lista backendów nie musi być stała — `Pool` wystawia dwa mutatory, bezpieczne przy jednoczesnym ruchu:
+
+- **`AddBackend(b)`** — dodaje backend do puli; `ErrDuplicateBackend`, gdy już jest w puli.
+- **`RemoveBackend(b)`** — usuwa backend i zeruje jego stan smooth weighted round-robin (`ErrBackendNotFound`, gdy go nie ma).
+
+Lista jest trzymana jako jeden atomowy snapshot (`atomic.Value`) i mutowana pod mutexem, więc `Next()` zawsze widzi pełną, niezmienioną listę. Requesty w trakcie obsługi na usuwanym backendzie kończą się normalnie — `Next()` po prostu przestaje go zwracać.
+
+Stan smooth WRR (`current`) mieszka **na backendzie**, więc usunięcie/dodanie nigdy nie przenosi stanu między backendami (nowy backend startuje z zerem) — to celowy wybór, o którym mowa przy 11c.
+
+Health checker iteruje aktualną listę: nowe backendy są sprawdzane od następnego cyklu, a stan checka usuniętego backendu jest czyszczony (`prune`), więc ponownie dodany zaczyna od zera.
+
+Nadal **nie ma endpointu ani flagi do zmiany backendów w trakcie działania** — to API programistyczne; lista startowa pochodzi z konfiguracji.
+
 ## Zakres
 
 W zakresie: proxy HTTP, round-robin, health checki, timeouty, retry dla metod idempotentnych, graceful shutdown, metryki Prometheus, testy.
@@ -58,7 +73,7 @@ W zakresie: proxy HTTP, round-robin, health checki, timeouty, retry dla metod id
 ## Świadome ograniczenia
 
 - **Domyślnie round-robin bez wag** — wagi są dostępne (`WithWeight` + `AlgorithmWeightedRoundRobin`), ale nie są domyślne; nie ma weighted least-connections (waga nie wpływa na least-connections).
-- **Brak dynamicznej konfiguracji** — lista backendów jest stała w trakcie działania procesu; zmiana wymaga restartu.
+- **Brak endpointu/flagi do zmiany backendów w trakcie działania** — lista startowa jest stała z konfiguracji; `AddBackend`/`RemoveBackend` to API programistyczne, które LB sam nie wystawia (wymagałoby integracji z API/konfigiem).
 - **Retry tylko dla metod idempotentnych i tylko przed wysłaniem bajtów do klienta** — błędy w trakcie streamowania odpowiedzi nie są ponawiane, metody z efektami ubocznymi (`POST`/`PUT`/`PATCH`) nigdy.
 - **Brak retry „w ciemno" w `ErrorHandler`** — retry jest realizowane na poziomie serwera, gdzie wiadomo, czy odpowiedź dotarła już do klienta.
 - **Health check z progiem, ale bez circuit breakera** — hysteresis (`failureThreshold=3`, `successThreshold=2`) ogranicza flapping, ale nie ma pełnego otwierania/zamykania obwodu.

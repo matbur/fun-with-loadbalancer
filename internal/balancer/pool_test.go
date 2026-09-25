@@ -1,6 +1,8 @@
 package balancer
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -150,4 +152,99 @@ func TestLeastConnectionsSkipsUnhealthy(t *testing.T) {
 	pool := NewPool([]*Backend{down, other}, WithAlgorithm(AlgorithmLeastConnections))
 
 	assert.Same(t, other, pool.Next())
+}
+
+func TestPoolAddBackend(t *testing.T) {
+	pool := NewPool(nil)
+	b := mustBackend(t, "http://127.0.0.1:1")
+
+	require.NoError(t, pool.AddBackend(b))
+	assert.Equal(t, []*Backend{b}, pool.Backends())
+	assert.Same(t, b, pool.Next())
+
+	// A duplicate add is rejected and must not change the list.
+	require.ErrorIs(t, pool.AddBackend(b), ErrDuplicateBackend)
+	assert.Len(t, pool.Backends(), 1)
+}
+
+func TestPoolAddNilBackend(t *testing.T) {
+	pool := NewPool(nil)
+	require.Error(t, pool.AddBackend(nil))
+	assert.Empty(t, pool.Backends())
+}
+
+func TestPoolRemoveBackend(t *testing.T) {
+	b := mustBackend(t, "http://127.0.0.1:1")
+	pool := NewPool([]*Backend{b})
+
+	require.NoError(t, pool.RemoveBackend(b))
+	assert.Empty(t, pool.Backends())
+	assert.Nil(t, pool.Next(), "a removed backend must not be selected")
+
+	require.ErrorIs(t, pool.RemoveBackend(b), ErrBackendNotFound)
+}
+
+func TestPoolRemoveBackendResetsWeightedState(t *testing.T) {
+	b := mustBackend(t, "http://127.0.0.1:1")
+	pool := NewPool([]*Backend{b}, WithAlgorithm(AlgorithmWeightedRoundRobin))
+
+	// Simulate a backend mid smooth-WRR cycle (e.g. accumulated weight after
+	// several selections).
+	b.currentWeight = 5
+
+	require.NoError(t, pool.RemoveBackend(b))
+	assert.Zero(t, b.currentWeight, "removal must reset the smooth-WRR accumulator")
+
+	// Re-adding starts a fresh backend, not one mid-cycle.
+	require.NoError(t, pool.AddBackend(b))
+	assert.Equal(t, []*Backend{b}, pool.Backends())
+}
+
+func TestPoolConcurrentAddRemove(t *testing.T) {
+	pool := NewPool(nil)
+
+	const workers = 8
+	const perWorker = 25
+
+	// Pre-create backends so the goroutines never touch t through
+	// require/assert helpers.
+	all := make([][]*Backend, workers)
+	for w := range workers {
+		for i := range perWorker {
+			b, err := NewBackend(fmt.Sprintf("http://127.0.0.1:%d", 2000+w*100+i))
+			require.NoError(t, err)
+			all[w] = append(all[w], b)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for _, b := range all[w] {
+				if err := pool.AddBackend(b); err != nil {
+					t.Errorf("AddBackend: %v", err)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	assert.Len(t, pool.Backends(), workers*perWorker, "no concurrent add may be lost")
+
+	for w := range workers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for _, b := range all[w] {
+				if err := pool.RemoveBackend(b); err != nil {
+					t.Errorf("RemoveBackend: %v", err)
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	assert.Empty(t, pool.Backends())
 }

@@ -171,3 +171,23 @@ func TestCheckerRunTogglesHealth(t *testing.T) {
 	healthy.Store(true)
 	assert.Eventually(t, func() bool { return b.Healthy.Load() }, 2*time.Second, 10*time.Millisecond)
 }
+
+func TestCheckerPrunesRemovedBackends(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+
+	b := mustBackend(t, srv.URL)
+	pool := balancer.NewPool([]*balancer.Backend{b})
+	c := New(pool)
+
+	for range failureThreshold {
+		c.checkAll(context.Background())
+	}
+	require.Contains(t, c.state, b, "state should be tracked while the backend is in the pool")
+
+	require.NoError(t, pool.RemoveBackend(b))
+	c.checkAll(context.Background())
+
+	assert.NotContains(t, c.state, b, "state for removed backends must be pruned")
+	assert.Empty(t, c.state)
+}

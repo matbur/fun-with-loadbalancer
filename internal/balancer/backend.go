@@ -17,6 +17,10 @@ type Backend struct {
 
 	weight int          // relative weight for weighted algorithms (default 1)
 	active atomic.Int32 // in-flight requests for least-connections
+	// currentWeight is the smooth weighted round-robin accumulator (nginx
+	// algorithm). It is only touched by Pool.nextWeighted while holding the
+	// pool's mutex, so it needs no synchronization of its own.
+	currentWeight int
 }
 
 type BackendOption func(*Backend)

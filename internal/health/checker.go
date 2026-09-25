@@ -79,8 +79,27 @@ func (c *Checker) Run(ctx context.Context) {
 }
 
 func (c *Checker) checkAll(ctx context.Context) {
-	for _, b := range c.pool.Backends() {
+	backends := c.pool.Backends()
+	for _, b := range backends {
 		c.update(b, c.checkBackend(ctx, b))
+	}
+	c.prune(backends)
+}
+
+// prune drops health state for backends that are no longer in the pool, so a
+// removed backend does not leak state and a re-added one starts fresh.
+func (c *Checker) prune(current []*balancer.Backend) {
+	keep := make(map[*balancer.Backend]struct{}, len(current))
+	for _, b := range current {
+		keep[b] = struct{}{}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for b := range c.state {
+		if _, ok := keep[b]; !ok {
+			delete(c.state, b)
+		}
 	}
 }
 

@@ -1,6 +1,8 @@
 package balancer
 
 import (
+	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -22,15 +24,26 @@ const (
 	AlgorithmLeastConnections
 )
 
+var (
+	// ErrDuplicateBackend is returned by (Pool).AddBackend when the backend is
+	// already part of the pool.
+	ErrDuplicateBackend = errors.New("backend already in pool")
+
+	// ErrBackendNotFound is returned by (Pool).RemoveBackend when the backend
+	// is not part of the pool.
+	ErrBackendNotFound = errors.New("backend not in pool")
+)
+
 type Pool struct {
 	backends atomic.Value // []*Backend
 	next     atomic.Uint64
 
 	alg Algorithm
 
-	// State for smooth weighted round-robin, guarded by mu.
-	mu              sync.Mutex
-	weightedCurrent []int
+	// mu serializes smooth weighted round-robin selection (Backend.currentWeight)
+	// and list mutations (AddBackend/RemoveBackend). Next() for the other
+	// algorithms reads the atomic backends snapshot without taking it.
+	mu sync.Mutex
 }
 
 type PoolOption func(*Pool)
@@ -53,6 +66,52 @@ func NewPool(backends []*Backend, opts ...PoolOption) *Pool {
 
 func (p *Pool) Backends() []*Backend {
 	return append([]*Backend(nil), p.backends.Load().([]*Backend)...)
+}
+
+// AddBackend adds b to the pool. It returns ErrDuplicateBackend if b is
+// already present. The new list is stored as a single atomic snapshot, so
+// concurrent Next() calls either see b or do not — never a partial list.
+func (p *Pool) AddBackend(b *Backend) error {
+	if b == nil {
+		return errors.New("balancer: nil backend")
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	backends := p.backends.Load().([]*Backend)
+	if slices.Contains(backends, b) {
+		return ErrDuplicateBackend
+	}
+
+	next := make([]*Backend, 0, len(backends)+1)
+	next = append(next, backends...)
+	next = append(next, b)
+	p.backends.Store(next)
+	return nil
+}
+
+// RemoveBackend removes b from the pool and resets its smooth weighted
+// round-robin state, so a re-added backend starts with a clean accumulator.
+// It returns ErrBackendNotFound if b is not in the pool. Requests already
+// in flight to b finish normally — Next() simply stops returning it.
+func (p *Pool) RemoveBackend(b *Backend) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	backends := p.backends.Load().([]*Backend)
+	for i, existing := range backends {
+		if existing == b {
+			next := make([]*Backend, 0, len(backends)-1)
+			next = append(next, backends[:i]...)
+			next = append(next, backends[i+1:]...)
+			p.backends.Store(next)
+
+			b.currentWeight = 0
+			return nil
+		}
+	}
+	return ErrBackendNotFound
 }
 
 func (p *Pool) Next() *Backend {
@@ -85,10 +144,12 @@ func (p *Pool) nextRoundRobin() *Backend {
 }
 
 // nextWeighted implements smooth weighted round-robin (nginx algorithm):
-// every call adds each backend's weight to its current value, then the
-// backend with the highest current value is selected and its current value is
+// every call adds each backend's weight to its currentWeight, then the
+// backend with the highest currentWeight is selected and its currentWeight is
 // reduced by the total weight. Only healthy backends participate, so when one
-// is down the others share its load proportionally.
+// is down the others share its load proportionally. The accumulator lives on
+// each Backend (Backend.currentWeight), which keeps the state correct when
+// backends are added or removed dynamically.
 func (p *Pool) nextWeighted() *Backend {
 	backends := p.backends.Load().([]*Backend)
 	if len(backends) == 0 {
@@ -98,30 +159,26 @@ func (p *Pool) nextWeighted() *Backend {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if len(p.weightedCurrent) != len(backends) {
-		p.weightedCurrent = make([]int, len(backends))
-	}
-
 	total := 0
-	best := -1
-	for i := range backends {
-		if !backends[i].Healthy.Load() {
-			p.weightedCurrent[i] = 0
+	var best *Backend
+	for _, b := range backends {
+		if !b.Healthy.Load() {
+			b.currentWeight = 0
 			continue
 		}
-		w := backends[i].Weight()
-		p.weightedCurrent[i] += w
+		w := b.Weight()
+		b.currentWeight += w
 		total += w
-		if best == -1 || p.weightedCurrent[i] > p.weightedCurrent[best] {
-			best = i
+		if best == nil || b.currentWeight > best.currentWeight {
+			best = b
 		}
 	}
-	if best == -1 {
+	if best == nil {
 		return nil
 	}
 
-	p.weightedCurrent[best] -= total
-	return backends[best]
+	best.currentWeight -= total
+	return best
 }
 
 // nextLeastConnections picks the healthy backend with the lowest number of
