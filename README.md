@@ -11,7 +11,7 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 - **Health check**: okresowe `GET /healthz` na każdym backendzie, z krótkim timeoutem.
 - **Request timeout i transport z connection poolingiem** — współdzielony `http.Transport`, świadome wartości timeoutów (dial, response header, idle).
 - **Brak retry dla metod nieidempotentnych** (`POST`, `PUT`, `PATCH`) — retry tylko dla `GET`/`HEAD`/`OPTIONS`, `maxAttempts = 2`, kolejna próba omija padający backend.
-- **Konfiguracja przez flagi lub plik** — lista backendów, adres listen, interwał health checka.
+- **Konfiguracja przez flagi lub plik YAML/JSON** (`-config`; flagi nadpisują plik) — lista backendów, adres listen, algorytm, wagi, breaker, interwały health checka.
 - **Graceful shutdown po `SIGTERM`/`SIGINT`** — dokończenie trwających requestów, zatrzymanie health checker'a.
 
 ## Błędy i retry
@@ -135,6 +135,51 @@ Przykład z wagami i least-connections:
 ```bash
 go run ./cmd/lb -backends http://localhost:9001,http://localhost:9002 \
   -algorithm least-connections -weights 1,2 -listen :8080
+```
+
+Całą konfigurację można też przenieść do pliku YAML/JSON — patrz niżej.
+
+## Konfiguracja YAML/JSON
+
+Zamiast (albo obok) flag konfiguracja może pochodzić z pliku:
+
+```bash
+go run ./cmd/lb -config lb.yaml
+```
+
+Zasady łączenia wartości: **jawnie podane flagi mają pierwszeństwo**, potem wartości z pliku, na końcu domyślne. Plik może pomijać pola — wtedy działają domyślne (lub flagi). Format rozpoznawany jest po rozszerzeniu (`.yaml`, `.yml`, `.json`); czasy trwania podaje się jako string („5s", „10s").
+
+Pełny, opisany przykład w YAML (wszystkie pola z komentarzami):
+
+```bash
+go run ./cmd/lb -config examples/lb.yaml
+```
+
+Zawartość `examples/lb.yaml`:
+
+```yaml
+listen: ":8080"
+backends:
+  - http://localhost:9001
+  - http://localhost:9002
+algorithm: weighted-round-robin   # round-robin | weighted-round-robin | least-connections
+weights: [2, 1]
+health_check_every: 10s
+health_check_timeout: 2s
+breaker_threshold: 3              # kolejne błędy transportu otwierające obwód
+breaker_cooldown: 5s              # czas otwarcia obwodu przed próbą
+```
+
+`lb.json` (odpowiednik, bez komentarzy — JSON ich nie wspiera):
+
+```json
+{
+  "listen": ":8080",
+  "backends": ["http://localhost:9001", "http://localhost:9002"],
+  "algorithm": "least-connections",
+  "breaker_threshold": 3,
+  "breaker_cooldown": "5s"
+}
 ```
 
 ## Testy

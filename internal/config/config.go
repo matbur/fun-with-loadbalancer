@@ -1,11 +1,15 @@
 package config
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 type Config struct {
@@ -14,8 +18,8 @@ type Config struct {
 	HealthCheckEvery   time.Duration
 	HealthCheckTimeout time.Duration
 
-	// Selection algorithm: one of round-robin, weighted-round-robin,
-	// least-connections (validated by cmd/lb, which maps it to balancer).
+	// Algorithm is one of round-robin, weighted-round-robin,
+	// least-connections (validated here; cmd/lb maps it to balancer).
 	Algorithm string
 	// Weights aligned with Backends; empty means 1 for every backend.
 	Weights []int
@@ -24,9 +28,25 @@ type Config struct {
 	BreakerCooldown  time.Duration
 }
 
+// fileConfig mirrors Config for YAML/JSON files. Pointers and nil slices
+// distinguish "absent from the file" from explicit zero values, so file
+// contents can be merged with flags and defaults. Durations are strings
+// (e.g. "5s") parsed with time.ParseDuration.
+type fileConfig struct {
+	ListenAddr         *string  `json:"listen" yaml:"listen"`
+	Backends           []string `json:"backends" yaml:"backends"`
+	HealthCheckEvery   *string  `json:"health_check_every" yaml:"health_check_every"`
+	HealthCheckTimeout *string  `json:"health_check_timeout" yaml:"health_check_timeout"`
+	Algorithm          *string  `json:"algorithm" yaml:"algorithm"`
+	Weights            []int    `json:"weights" yaml:"weights"`
+	BreakerThreshold   *int     `json:"breaker_threshold" yaml:"breaker_threshold"`
+	BreakerCooldown    *string  `json:"breaker_cooldown" yaml:"breaker_cooldown"`
+}
+
 func Parse(args []string) (Config, error) {
 	fs := flag.NewFlagSet("lb", flag.ContinueOnError)
 
+	var cfgFile string
 	var listen string
 	var backendsStr string
 	var healthCheckEvery time.Duration
@@ -36,6 +56,7 @@ func Parse(args []string) (Config, error) {
 	var breakerThreshold int
 	var breakerCooldown time.Duration
 
+	fs.StringVar(&cfgFile, "config", "", "path to a YAML/JSON config file; explicitly set flags override file values")
 	fs.StringVar(&listen, "listen", ":8080", "address to listen on")
 	fs.StringVar(&backendsStr, "backends", "", "comma-separated backend URLs")
 	fs.DurationVar(&healthCheckEvery, "health-check-every", 10*time.Second, "health check interval")
@@ -49,26 +70,42 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
-	var backends []string
-	for rawURL := range strings.SplitSeq(backendsStr, ",") {
-		rawURL = strings.TrimSpace(rawURL)
-		if rawURL != "" {
-			backends = append(backends, rawURL)
-		}
+	// Explicitly set flags override the config file; anything the file does
+	// not define falls back to the flag defaults.
+	set := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	backends := splitCSV(backendsStr)
+	weights, err := parseWeights(weightsStr)
+	if err != nil {
+		return Config{}, err
 	}
 
-	var weights []int
-	if weightsStr != "" {
-		for part := range strings.SplitSeq(weightsStr, ",") {
-			part = strings.TrimSpace(part)
-			if part == "" {
-				continue
-			}
-			w, err := strconv.Atoi(part)
-			if err != nil {
-				return Config{}, fmt.Errorf("invalid weight %q: %w", part, err)
-			}
-			weights = append(weights, w)
+	if cfgFile != "" {
+		fc, err := loadFile(cfgFile)
+		if err != nil {
+			return Config{}, err
+		}
+
+		listen = overlay(set, "listen", listen, fc.ListenAddr)
+		algorithm = overlay(set, "algorithm", algorithm, fc.Algorithm)
+		breakerThreshold = overlay(set, "breaker_threshold", breakerThreshold, fc.BreakerThreshold)
+
+		if !set["backends"] && fc.Backends != nil {
+			backends = fc.Backends
+		}
+		if !set["weights"] && fc.Weights != nil {
+			weights = fc.Weights
+		}
+
+		if healthCheckEvery, err = overlayDuration(set, "health_check_every", healthCheckEvery, fc.HealthCheckEvery); err != nil {
+			return Config{}, err
+		}
+		if healthCheckTimeout, err = overlayDuration(set, "health_check_timeout", healthCheckTimeout, fc.HealthCheckTimeout); err != nil {
+			return Config{}, err
+		}
+		if breakerCooldown, err = overlayDuration(set, "breaker_cooldown", breakerCooldown, fc.BreakerCooldown); err != nil {
+			return Config{}, err
 		}
 	}
 
@@ -89,6 +126,9 @@ func Parse(args []string) (Config, error) {
 	if len(cfg.Backends) == 0 {
 		return Config{}, fmt.Errorf("at least one backend is required")
 	}
+	if !validAlgorithm(cfg.Algorithm) {
+		return Config{}, fmt.Errorf("unknown algorithm %q (allowed: round-robin, weighted-round-robin, least-connections)", cfg.Algorithm)
+	}
 	if cfg.BreakerThreshold < 1 {
 		return Config{}, fmt.Errorf("breaker-threshold must be >= 1")
 	}
@@ -100,4 +140,87 @@ func Parse(args []string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// overlay returns file when the flag was not explicitly set and the file
+// defines a value; otherwise it returns the flag value (or its default).
+func overlay[T any](set map[string]bool, flagName string, flagValue T, file *T) T {
+	if !set[flagName] && file != nil {
+		return *file
+	}
+	return flagValue
+}
+
+// overlayDuration is overlay for duration-typed fields, whose file values
+// are strings parsed with time.ParseDuration.
+func overlayDuration(set map[string]bool, flagName string, flagValue time.Duration, file *string) (time.Duration, error) {
+	if set[flagName] || file == nil {
+		return flagValue, nil
+	}
+	d, err := time.ParseDuration(*file)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", flagName, *file, err)
+	}
+	return d, nil
+}
+
+// loadFile reads a YAML (.yaml/.yml) or JSON (.json) config file, detected
+// by extension.
+func loadFile(path string) (*fileConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	fc := new(fileConfig)
+	switch {
+	case strings.HasSuffix(strings.ToLower(path), ".json"):
+		err = json.Unmarshal(data, fc)
+	case strings.HasSuffix(strings.ToLower(path), ".yaml"), strings.HasSuffix(strings.ToLower(path), ".yml"):
+		err = yaml.Unmarshal(data, fc)
+	default:
+		return nil, fmt.Errorf("unsupported config file extension for %q (use .yaml, .yml or .json)", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	return fc, nil
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for part := range strings.SplitSeq(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func parseWeights(weightsStr string) ([]int, error) {
+	if weightsStr == "" {
+		return nil, nil
+	}
+	var weights []int
+	for part := range strings.SplitSeq(weightsStr, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		w, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid weight %q: %w", part, err)
+		}
+		weights = append(weights, w)
+	}
+	return weights, nil
+}
+
+func validAlgorithm(name string) bool {
+	switch name {
+	case "round-robin", "weighted-round-robin", "least-connections":
+		return true
+	}
+	return false
 }

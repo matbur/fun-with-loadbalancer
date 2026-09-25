@@ -1,0 +1,36 @@
+# Example full load balancer configuration (step 11f).
+# Run with:
+#
+#   go run ./cmd/lb -config examples/lb.yaml
+#
+# Every field is optional — omitted ones use their defaults.
+# Explicitly set flags override file values ("flags > file > defaults").
+
+# Address the load balancer listens on. Defaults to ":8080".
+listen: ":8080"
+
+# Backends — base addresses (scheme://host:port) the original request path is
+# appended to. At least one backend is required (from the file or -backends).
+backends:
+  - http://localhost:9001
+  - http://localhost:9002
+
+# Backend selection algorithm.
+#   round-robin            — in turn (default)
+#   weighted-round-robin   — proportional to weights
+#   least-connections      — backend with the fewest active requests
+algorithm: weighted-round-robin
+
+# Backend weights, in the same order as `backends`. Optional — without them
+# every backend has weight 1. The number of weights must match the number of
+# backends. Used by algorithm: weighted-round-robin.
+weights: [2, 1]
+
+# Health check: how often and with what timeout every backend is probed with
+# GET /healthz. Defaults to 10s and 2s respectively.
+health_check_every: 10s
+health_check_timeout: 2s
+
+# Per-backend circuit breaker (transport errors only, not backend HTTP codes).
+breaker_threshold: 3   # consecutive transport errors that open the circuit; >= 1
+breaker_cooldown: 5s   # how long the circuit stays open before a retry

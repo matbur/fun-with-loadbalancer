@@ -147,7 +147,7 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11f. Konfiguracja YAML/JSON
 
-- [ ] Konfiguracja YAML/JSON
+- [x] Konfiguracja YAML/JSON — flaga `-config` (rozszerzenia `.yaml`/`.yml`/`.json`), pola jak flagi (`listen`, `backends`, `weights`, `algorithm`, `breaker_*`, `health_check_*`); precedencja **flagi > plik > domyślne** (`fileConfig` z pointerami + `flag.Visit`); czasy jako stringi; walidacja algorytmu przeniesiona do `config.Parse`; testy jednostkowe (pełny plik, minimalny, nadpisywanie flagami, złe rozszerzenie/zawartość/czas/algorytm) + README
 
 ### 11g. Endpointy `/ready` i `/live`
 
