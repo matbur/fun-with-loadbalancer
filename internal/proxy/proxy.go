@@ -56,6 +56,9 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.observeBackend(backend)
+	backend.Acquire()
+	defer backend.Release()
+
 	tw := newTrackingWriter(w)
 	backend.Proxy.ServeHTTP(tw, r)
 
@@ -83,8 +86,10 @@ func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.observeBackend(backend)
+		backend.Acquire()
 		tw.reset()
 		backend.Proxy.ServeHTTP(tw, r)
+		backend.Release()
 
 		if tw.err == nil {
 			return

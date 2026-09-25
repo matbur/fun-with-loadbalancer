@@ -36,13 +36,28 @@ Wyjątek wynikający z zachowania stdlib: gdy klient zgłosił `TE: trailers`, p
 
 Zachowanie jest przypięte testami (`TestServeHTTPStripsHopByHopHeadersFromRequest/FromResponse`, `TestServeHTTPDoesNotForwardConnectionClose`).
 
+## Algorytmy
+
+Domyślnie pula używa **round-robin** (atomowy licznik). Dostępne alternatywy, wybierane przy budowaniu puli (`balancer.NewPool(..., balancer.WithAlgorithm(...))`):
+
+- **Weighted round-robin** (`AlgorithmWeightedRoundRobin`) — smooth weighted round-robin (algorytm nginx): backend z wagą `w` dostaje ok. `w` razy więcej requestów niż backend z wagą 1. Waga ustawiana przez `balancer.WithWeight(w)` w `NewBackend`. Niezdrowe backendy są pomijane, a ich udział rozdzielany proporcjonalnie między zdrowe.
+- **Least-connections** (`AlgorithmLeastConnections`) — wybiera zdrowy backend z najmniejszą liczbą requestów w trakcie obsługi (licznik in-flight per backend, zwiększany przez `Acquire`, zwalniany przez `Release` po zakończeniu). Remis rozstrzyga pierwszy backend na liście.
+
+```go
+backends := []*balancer.Backend{
+    b1, // domyślna waga 1
+    b2, // balancer.NewBackend(url2, balancer.WithWeight(3))
+}
+pool := balancer.NewPool(backends, balancer.WithAlgorithm(balancer.AlgorithmWeightedRoundRobin))
+```
+
 ## Zakres
 
 W zakresie: proxy HTTP, round-robin, health checki, timeouty, retry dla metod idempotentnych, graceful shutdown, metryki Prometheus, testy.
 
 ## Świadome ograniczenia
 
-- **Round-robin bez wag** — zakłada podobny koszt requestów; przy zróżnicowanych backendach lepszy byłby weighted round-robin lub least-connections.
+- **Domyślnie round-robin bez wag** — wagi są dostępne (`WithWeight` + `AlgorithmWeightedRoundRobin`), ale nie są domyślne; nie ma weighted least-connections (waga nie wpływa na least-connections).
 - **Brak dynamicznej konfiguracji** — lista backendów jest stała w trakcie działania procesu; zmiana wymaga restartu.
 - **Retry tylko dla metod idempotentnych i tylko przed wysłaniem bajtów do klienta** — błędy w trakcie streamowania odpowiedzi nie są ponawiane, metody z efektami ubocznymi (`POST`/`PUT`/`PATCH`) nigdy.
 - **Brak retry „w ciemno" w `ErrorHandler`** — retry jest realizowane na poziomie serwera, gdzie wiadomo, czy odpowiedź dotarła już do klienta.

@@ -135,7 +135,7 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11c. Weighted round-robin / least-connections
 
-- [ ] Weighted round-robin / least-connections
+- [x] Weighted round-robin (`AlgorithmWeightedRoundRobin`, smooth nginx) i least-connections (`AlgorithmLeastConnections`) jako alternatywy `Pool.Next()`; wagi przez `WithWeight`; dokumentacja w README
 
 ### 11d. Dynamiczne dodawanie/usuwanie backendów
 

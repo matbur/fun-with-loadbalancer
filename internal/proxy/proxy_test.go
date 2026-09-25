@@ -98,7 +98,7 @@ func TestServeHTTPRoundRobinsRequests(t *testing.T) {
 	srv := NewServer(balancer.NewPool([]*balancer.Backend{b1, b2}))
 
 	const total = 10
-	for i := 0; i < total; i++ {
+	for range total {
 		req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, req)
@@ -381,4 +381,57 @@ func TestServeHTTPDoesNotForwardConnectionClose(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Empty(t, got, "client Connection: close must not reach the backend (proxy keeps its own connection)")
+}
+
+func TestServeHTTPLeastConnections(t *testing.T) {
+	release := make(chan struct{})
+	blocking := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer blocking.Close()
+
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fast.Close()
+
+	bBlock, err := balancer.NewBackend(blocking.URL)
+	require.NoError(t, err)
+	bFast, err := balancer.NewBackend(fast.URL)
+	require.NoError(t, err)
+
+	pool := balancer.NewPool(
+		[]*balancer.Backend{bBlock, bFast},
+		balancer.WithAlgorithm(balancer.AlgorithmLeastConnections),
+	)
+	srv := NewServer(pool)
+
+	// First request blocks on the first backend in the list.
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		srv.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	}()
+
+	// Wait until the blocking backend actually carries the in-flight request.
+	require.Eventually(t, func() bool { return bBlock.Active() == 1 }, time.Second, 10*time.Millisecond)
+
+	// Second request must go to the idle backend instead of blocking.
+	secondDone := make(chan struct{})
+	rec := httptest.NewRecorder()
+	go func() {
+		defer close(secondDone)
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	}()
+
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second request blocked — least-connections did not pick the idle backend")
+	}
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	close(release)
+	<-firstDone
 }

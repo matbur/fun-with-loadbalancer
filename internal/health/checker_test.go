@@ -91,7 +91,7 @@ func TestCheckerRecoversAfterSuccessThreshold(t *testing.T) {
 	pool := balancer.NewPool([]*balancer.Backend{b})
 
 	c := New(pool)
-	for i := 0; i < failureThreshold; i++ {
+	for range failureThreshold {
 		c.checkAll(context.Background())
 	}
 	assert.False(t, b.Healthy.Load())

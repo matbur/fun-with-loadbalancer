@@ -14,6 +14,9 @@ type Backend struct {
 	URL     *url.URL
 	Proxy   *httputil.ReverseProxy
 	Healthy atomic.Bool
+
+	weight int          // relative weight for weighted algorithms (default 1)
+	active atomic.Int32 // in-flight requests for least-connections
 }
 
 type BackendOption func(*Backend)
@@ -22,6 +25,35 @@ func WithTransport(rt http.RoundTripper) BackendOption {
 	return func(b *Backend) {
 		b.Proxy.Transport = rt
 	}
+}
+
+// WithWeight sets the relative weight used by weighted load-balancing
+// algorithms. Values below 1 are clamped to 1.
+func WithWeight(w int) BackendOption {
+	return func(b *Backend) {
+		b.weight = max(w, 1)
+	}
+}
+
+// Weight returns the backend's relative weight (never below 1).
+func (b *Backend) Weight() int {
+	return max(b.weight, 1)
+}
+
+// Acquire marks one in-flight request on this backend. It reports to
+// least-connections selection and is a no-op for other algorithms.
+func (b *Backend) Acquire() {
+	b.active.Add(1)
+}
+
+// Release marks the end of an in-flight request on this backend.
+func (b *Backend) Release() {
+	b.active.Add(-1)
+}
+
+// Active returns the number of in-flight requests currently on this backend.
+func (b *Backend) Active() int {
+	return int(b.active.Load())
 }
 
 type upstreamErrorWriter interface {
