@@ -143,7 +143,7 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11e. Circuit breaker
 
-- [ ] Circuit breaker
+- [x] Circuit breaker per backend (`circuitBreaker`): closed/open/half-open, otwarcie po `threshold` kolejnych błędach transportu, cooldown → próba (half-open), sukces domyka / błąd otwiera ponownie; `Pool.Next()` pomija backendy z otwartym obwodem (`Available`); opcje `WithBreakerThreshold`/`WithBreakerCooldown`; testy jednostkowe + end-to-end w proxy + README
 
 ### 11f. Konfiguracja YAML/JSON
 

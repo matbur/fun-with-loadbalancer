@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"sync/atomic"
+	"time"
 )
 
 type Backend struct {
@@ -21,6 +22,8 @@ type Backend struct {
 	// algorithm). It is only touched by Pool.nextWeighted while holding the
 	// pool's mutex, so it needs no synchronization of its own.
 	currentWeight int
+
+	breaker circuitBreaker
 }
 
 type BackendOption func(*Backend)
@@ -28,6 +31,22 @@ type BackendOption func(*Backend)
 func WithTransport(rt http.RoundTripper) BackendOption {
 	return func(b *Backend) {
 		b.Proxy.Transport = rt
+	}
+}
+
+// WithBreakerThreshold sets how many consecutive transport-level failures
+// open the backend's circuit (default 3). Values below 1 are clamped to 1.
+func WithBreakerThreshold(n int) BackendOption {
+	return func(b *Backend) {
+		b.breaker.threshold = int32(max(n, 1))
+	}
+}
+
+// WithBreakerCooldown sets how long an open circuit stays open before
+// half-open probes are allowed again (default 5s).
+func WithBreakerCooldown(d time.Duration) BackendOption {
+	return func(b *Backend) {
+		b.breaker.cooldown = d
 	}
 }
 
@@ -58,6 +77,25 @@ func (b *Backend) Release() {
 // Active returns the number of in-flight requests currently on this backend.
 func (b *Backend) Active() int {
 	return int(b.active.Load())
+}
+
+// Available reports whether the backend can receive traffic: it must be
+// healthy according to the health checker and its circuit must be closed (or
+// half-open, i.e. probing).
+func (b *Backend) Available() bool {
+	return b.Healthy.Load() && b.breaker.allow()
+}
+
+// ReportFailure feeds a transport-level failure during request handling to
+// the backend's circuit breaker.
+func (b *Backend) ReportFailure() {
+	b.breaker.reportFailure()
+}
+
+// ReportSuccess feeds a successfully handled request (no transport error) to
+// the backend's circuit breaker.
+func (b *Backend) ReportSuccess() {
+	b.breaker.reportSuccess()
 }
 
 type upstreamErrorWriter interface {
@@ -109,6 +147,10 @@ func NewBackend(rawURL string, opts ...BackendOption) (*Backend, error) {
 	b := &Backend{
 		URL:   target,
 		Proxy: proxy,
+		breaker: circuitBreaker{
+			threshold: defaultBreakerThreshold,
+			cooldown:  defaultBreakerCooldown,
+		},
 	}
 	for _, opt := range opts {
 		opt(b)

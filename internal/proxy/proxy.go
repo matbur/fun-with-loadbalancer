@@ -63,8 +63,10 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	backend.Proxy.ServeHTTP(tw, r)
 
 	if tw.err == nil {
+		backend.ReportSuccess()
 		return
 	}
+	backend.ReportFailure()
 	s.observeBackendError(backend)
 	if tw.wroteHeader {
 		return
@@ -92,8 +94,10 @@ func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
 		backend.Release()
 
 		if tw.err == nil {
+			backend.ReportSuccess()
 			return
 		}
+		backend.ReportFailure()
 		s.observeBackendError(backend)
 		lastErr = tw.err
 		if tw.wroteHeader {

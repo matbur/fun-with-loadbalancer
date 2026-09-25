@@ -7,7 +7,7 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 - **HTTP, nie TCP/L4** — balansowanie na poziomie warstwy aplikacji.
 - **Balansowanie na requestcie**, nie na połączeniu TCP — każdy request jest niezależnie kierowany do backendu.
 - **Algorytm: round-robin** jako wersja podstawowa.
-- **Backend może być chwilowo niedostępny** — dlatego health check i pomijanie niezdrowych backendów.
+- **Backend może być chwilowo niedostępny** — dlatego health check, circuit breaker i pomijanie niedostępnych backendów.
 - **Health check**: okresowe `GET /healthz` na każdym backendzie, z krótkim timeoutem.
 - **Request timeout i transport z connection poolingiem** — współdzielony `http.Transport`, świadome wartości timeoutów (dial, response header, idle).
 - **Brak retry dla metod nieidempotentnych** (`POST`, `PUT`, `PATCH`) — retry tylko dla `GET`/`HEAD`/`OPTIONS`, `maxAttempts = 2`, kolejna próba omija padający backend.
@@ -22,6 +22,8 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 - błędy upstreamu zwracane przez backend (np. `500`) są przekazywane wprost do klienta bez retry.
 
 Retry dotyczy wyłącznie metod idempotentnych (`GET`, `HEAD`, `OPTIONS`): maksymalnie 2 próby, wykonywane tylko gdy błąd nastąpił przed wysłaniem jakichkolwiek bajtów do klienta (odpowiedź jest streamowana, bez buforowania w pamięci). Metody z efektami ubocznymi (`POST`, `PUT`, `PATCH`) nigdy nie są ponawiane, aby nie duplikować skutków.
+
+Przed serią błędów transportu chroni dodatkowo circuit breaker — szczegóły w sekcji niżej.
 
 ## Nagłówki hop-by-hop
 
@@ -64,19 +66,39 @@ Stan smooth WRR (`current`) mieszka **na backendzie**, więc usunięcie/dodanie 
 
 Health checker iteruje aktualną listę: nowe backendy są sprawdzane od następnego cyklu, a stan checka usuniętego backendu jest czyszczony (`prune`), więc ponownie dodany zaczyna od zera.
 
-Nadal **nie ma endpointu ani flagi do zmiany backendów w trakcie działania** — to API programistyczne; lista startowa pochodzi z konfiguracji.
+### Endpoint `/backends`
+
+`cmd/lb` wystawia admin endpoint (bez autoryzacji — do użytku lokalnego/developerskiego):
+
+- `GET /backends` — lista backendów jako JSON (`url`, `weight`, `healthy`, `active`),
+- `POST /backends` z ciałem `{"url": "http://localhost:9003", "weight": 1}` — dodaje backend (`201 Created`; `400` — zły URL/JSON; `409` — duplikat URL),
+- `DELETE /backends` z ciałem `{"url": "..."}` — usuwa (`204 No Content`; `404` — brak takiego backendu).
+
+Dodany backend dostaje współdzielony transport oraz te same parametry breakera co backendy startowe; health checker podchwyci go od następnego cyklu.
+
+## Circuit breaker
+
+Obok pasywnego health checka każdy backend ma **circuit breaker** chroniący przed serią błędów transportu (błędy połączenia, timeouty):
+
+- **Domknięty (closed)** — normalny ruch; kolejne błędy transportu liczą się do progu.
+- **Otwarty (open)** — po `threshold` (=3) kolejnych błędach backend wypada z rotacji (`Pool.Next()` go pomija) do końca `cooldown` (=5s).
+- **Półotwarty (half-open)** — po cooldownie backend wraca jako „próba": pierwszy request decyduje — sukces domyka obwód, błąd otwiera go ponownie z nowym cooldownem.
+
+W przeciwieństwie do health checka (cykliczny `GET /healthz` co 10s) breaker reaguje **natychmiast** na błędy obsługi requestów — backend może wypaść z rotacji, zanim pierwszy cykl checkera to zauważy. Liczone są wyłącznie błędy transportu (te dające `502`/`504`); kody HTTP z backendu (np. `500`) są przekazywane dalej i nie otwierają obwodu.
+
+Parametry ustawia się per backend (`WithBreakerThreshold`, `WithBreakerCooldown`), raportowanie jest automatyczne — proxy karmi breaker sukcesem/błędem każdej próby. Retry i breaker współpracują: jeśli pierwsza próba otworzy obwód, druga próba omija ten backend.
 
 ## Zakres
 
-W zakresie: proxy HTTP, round-robin, health checki, timeouty, retry dla metod idempotentnych, graceful shutdown, metryki Prometheus, testy.
+W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends`), graceful shutdown, metryki Prometheus, testy.
 
 ## Świadome ograniczenia
 
 - **Domyślnie round-robin bez wag** — wagi są dostępne (`WithWeight` + `AlgorithmWeightedRoundRobin`), ale nie są domyślne; nie ma weighted least-connections (waga nie wpływa na least-connections).
-- **Brak endpointu/flagi do zmiany backendów w trakcie działania** — lista startowa jest stała z konfiguracji; `AddBackend`/`RemoveBackend` to API programistyczne, które LB sam nie wystawia (wymagałoby integracji z API/konfigiem).
+- **Endpoint `/backends` bez autoryzacji** — wygodny do demo i lokalnego devu; w produkcji wymagałby uwierzytelnienia i ograniczeń (rate limit, dozwolone sieci).
 - **Retry tylko dla metod idempotentnych i tylko przed wysłaniem bajtów do klienta** — błędy w trakcie streamowania odpowiedzi nie są ponawiane, metody z efektami ubocznymi (`POST`/`PUT`/`PATCH`) nigdy.
 - **Brak retry „w ciemno" w `ErrorHandler`** — retry jest realizowane na poziomie serwera, gdzie wiadomo, czy odpowiedź dotarła już do klienta.
-- **Health check z progiem, ale bez circuit breakera** — hysteresis (`failureThreshold=3`, `successThreshold=2`) ogranicza flapping, ale nie ma pełnego otwierania/zamykania obwodu.
+- **Circuit breaker tylko dla błędów transportu** — progi health checka (`failureThreshold=3`, `successThreshold=2`) i breakera działają niezależnie; kody 5xx z backendu nie otwierają obwodu (są przekazywane dalej).
 - **WebSocket/upgrade poza zakresem** — `ReverseProxy` umie obsługiwać upgrade'y, ale zachowanie przy nich nie jest przetestowane ani wspierane.
 - **Brak limitu body requestu i limitu równoległych requestów** — obrona przed przeciążeniem opiera się na limitach połączeń wspólnego transportu, nie na semaforze aplikacyjnym.
 
@@ -99,7 +121,20 @@ curl http://localhost:8080/metrics
 ## Uruchomienie
 
 ```bash
-go run ./cmd/lb -backends http://localhost:9001,http://localhost:9002 -listen :8080
+go run ./cmd/lb \
+  -backends http://localhost:9001,http://localhost:9002 \
+  -listen :8080 \
+  -algorithm round-robin            # round-robin | weighted-round-robin | least-connections
+  -weights 1,2                      # wagi per backend (opcjonalne; domyślnie 1)
+  -breaker-threshold 3              # kolejne błędy transportu otwierające obwód
+  -breaker-cooldown 5s              # czas otwarcia obwodu przed próbą
+```
+
+Przykład z wagami i least-connections:
+
+```bash
+go run ./cmd/lb -backends http://localhost:9001,http://localhost:9002 \
+  -algorithm least-connections -weights 1,2 -listen :8080
 ```
 
 ## Testy

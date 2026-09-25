@@ -435,3 +435,43 @@ func TestServeHTTPLeastConnections(t *testing.T) {
 	close(release)
 	<-firstDone
 }
+
+func TestServeHTTPCircuitBreakerSkipsFailingBackend(t *testing.T) {
+	// Backend A is dead: every routing attempt ends in a dial error that
+	// feeds its circuit breaker (threshold 1 → opens on the first failure).
+	deadA := httptest.NewServer(http.NotFoundHandler())
+	deadAURL := deadA.URL
+	deadA.Close()
+
+	var countB atomic.Int32
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		countB.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backendB.Close()
+
+	bA, err := balancer.NewBackend(deadAURL, balancer.WithBreakerThreshold(1))
+	require.NoError(t, err)
+	bB, err := balancer.NewBackend(backendB.URL)
+	require.NoError(t, err)
+
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{bA, bB}))
+
+	// Round-robin guarantees A is reached within these requests; the
+	// retryable GETs fall back to B.
+	for range 3 {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+		assert.Equal(t, http.StatusOK, rec.Code)
+	}
+	require.False(t, bA.Available(), "backend A's circuit must be open after the failures")
+
+	before := countB.Load()
+	for range 5 {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+		assert.Equal(t, http.StatusOK, rec.Code)
+	}
+	assert.Equal(t, int32(5), countB.Load()-before,
+		"open circuit: every request must be served by B in a single attempt")
+}

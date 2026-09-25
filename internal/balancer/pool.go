@@ -135,7 +135,7 @@ func (p *Pool) nextRoundRobin() *Backend {
 
 	for i := range len(backends) {
 		candidate := backends[(start+uint64(i))%uint64(len(backends))]
-		if candidate.Healthy.Load() {
+		if candidate.Available() {
 			return candidate
 		}
 	}
@@ -162,7 +162,7 @@ func (p *Pool) nextWeighted() *Backend {
 	total := 0
 	var best *Backend
 	for _, b := range backends {
-		if !b.Healthy.Load() {
+		if !b.Available() {
 			b.currentWeight = 0
 			continue
 		}
@@ -192,7 +192,7 @@ func (p *Pool) nextLeastConnections() *Backend {
 
 	var best *Backend
 	for _, b := range backends {
-		if !b.Healthy.Load() {
+		if !b.Available() {
 			continue
 		}
 		if best == nil || b.Active() < best.Active() {
