@@ -61,6 +61,12 @@ func (cb *circuitBreaker) allow() bool {
 	}
 }
 
+// isOpen reports whether the circuit is currently open. Unlike allow it is a
+// passive read: it never performs the open → half-open transition.
+func (cb *circuitBreaker) isOpen() bool {
+	return circuitState(cb.state.Load()) == circuitOpen
+}
+
 // reportFailure feeds a transport error into the breaker. In closed state it
 // counts consecutive failures; a half-open probe failure re-opens the circuit
 // immediately. Failures while open are ignored (the circuit is already open).

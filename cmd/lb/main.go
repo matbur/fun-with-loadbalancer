@@ -85,6 +85,8 @@ func main() {
 	mux.HandleFunc("GET /backends", admin.list)
 	mux.HandleFunc("POST /backends", admin.add)
 	mux.HandleFunc("DELETE /backends", admin.remove)
+	mux.HandleFunc("GET /live", handleLive)
+	mux.HandleFunc("GET /ready", handleReady(pool))
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

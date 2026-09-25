@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,48 @@ func mustBackend(t *testing.T, rawURL string) *Backend {
 func TestPoolNextEmpty(t *testing.T) {
 	pool := NewPool(nil)
 	assert.Nil(t, pool.Next())
+}
+
+func TestPoolReady(t *testing.T) {
+	b := mustBackend(t, "http://127.0.0.1:1")
+	pool := NewPool([]*Backend{b})
+	assert.True(t, pool.Ready(), "a fresh backend is ready")
+
+	b.Healthy.Store(false)
+	assert.False(t, pool.Ready(), "an unhealthy backend must not make the pool ready")
+
+	b.Healthy.Store(true)
+	b.breaker.open()
+	assert.False(t, pool.Ready(), "a backend behind an open circuit must not make the pool ready")
+}
+
+func TestPoolReadyEmpty(t *testing.T) {
+	assert.False(t, NewPool(nil).Ready(), "an empty pool is never ready")
+}
+
+func TestPoolReadyMixed(t *testing.T) {
+	down := mustBackend(t, "http://127.0.0.1:1")
+	down.Healthy.Store(false)
+	up := mustBackend(t, "http://127.0.0.1:2")
+
+	pool := NewPool([]*Backend{down, up})
+	assert.True(t, pool.Ready(), "one usable backend is enough")
+}
+
+func TestPoolReadyViaFailures(t *testing.T) {
+	b, err := NewBackend("http://127.0.0.1:1",
+		WithBreakerThreshold(1),
+		WithBreakerCooldown(time.Hour),
+	)
+	require.NoError(t, err)
+
+	pool := NewPool([]*Backend{b})
+	assert.True(t, pool.Ready())
+
+	// One transport failure (threshold 1) opens the circuit: the pool stops
+	// being ready even though the backend is still marked healthy.
+	b.ReportFailure()
+	assert.False(t, pool.Ready(), "an open circuit must make the pool not ready")
 }
 
 func TestPoolNextAllUnhealthy(t *testing.T) {

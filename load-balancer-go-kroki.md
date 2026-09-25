@@ -151,7 +151,7 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11g. Endpointy `/ready` i `/live`
 
-- [ ] Endpointy `/ready` i `/live`
+- [x] Endpointy `/ready` i `/live` — `GET /live` = `200` (liveness procesu); `GET /ready` = `200` gdy ≥1 backend może przyjąć ruch (zdrowy + obwód nieotwarty), `503` w przeciwnym razie; nowe `Pool.Ready()` jako pasywny odczyt (`circuitBreaker.isOpen()`, bez mutacji stanu — inaczej niż `Available()`); testy jednostkowe (zdrowy/niezdrowy/otwarty obwód/pusty pool + brak side-effektu sondowania) oraz E2E w `cmd/lb` (200/503/405) + README
 
 ### 11h. Structured logging
 

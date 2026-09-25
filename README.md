@@ -88,6 +88,15 @@ W przeciwieństwie do health checka (cykliczny `GET /healthz` co 10s) breaker re
 
 Parametry ustawia się per backend (`WithBreakerThreshold`, `WithBreakerCooldown`), raportowanie jest automatyczne — proxy karmi breaker sukcesem/błędem każdej próby. Retry i breaker współpracują: jeśli pierwsza próba otworzy obwód, druga próba omija ten backend.
 
+## Endpointy `/live` i `/ready`
+
+Endpointy dla orchestratorów (np. Kubernetes liveness/readiness probes):
+
+- `GET /live` — **liveness**: `200`, dopóki proces działa; nie ma wewnętrznego stanu do sprawdzenia.
+- `GET /ready` — **readiness**: `200`, gdy co najmniej jeden backend może przyjąć ruch — jest zdrowy wg health checka *i* ma nieotwarty obwód circuit breakera; `503` w przeciwnym razie (ten sam wynik co odpowiedź proxy „no healthy backends").
+
+`/ready` to **pasywny odczyt** (`Pool.Ready()`): w przeciwieństwie do `Available()` nie powoduje przejścia open → half-open na breakerze — samo sondowanie readiness nie zmienia stanu obwodu (test `TestReadyDoesNotTripBreaker`).
+
 ## Zakres
 
 W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends`), graceful shutdown, metryki Prometheus, testy.

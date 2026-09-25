@@ -68,6 +68,20 @@ func (p *Pool) Backends() []*Backend {
 	return append([]*Backend(nil), p.backends.Load().([]*Backend)...)
 }
 
+// Ready reports whether at least one backend can currently take traffic: it
+// is healthy (per the health checker) and its circuit breaker is not open.
+// It mirrors the proxy's "no healthy backends" outcome without mutating
+// state — a readiness probe never triggers the open → half-open transition
+// that a call to Available would.
+func (p *Pool) Ready() bool {
+	for _, b := range p.Backends() {
+		if b.Healthy.Load() && !b.breaker.isOpen() {
+			return true
+		}
+	}
+	return false
+}
+
 // AddBackend adds b to the pool. It returns ErrDuplicateBackend if b is
 // already present. The new list is stored as a single atomic snapshot, so
 // concurrent Next() calls either see b or do not — never a partial list.
