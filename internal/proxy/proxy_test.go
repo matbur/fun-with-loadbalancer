@@ -295,3 +295,90 @@ func TestServeHTTPWithMetricsCountsBackendErrors(t *testing.T) {
 	assert.Equal(t, 3.0, m.BackendErrors(b.URL.Host))
 	assert.Equal(t, 3.0, m.BackendRequests(b.URL.Host))
 }
+
+// httputil.ReverseProxy strips hop-by-hop headers (RFC 7230 §6.1) in both
+// directions. These tests pin that behavior so it cannot regress silently.
+
+func TestServeHTTPStripsHopByHopHeadersFromRequest(t *testing.T) {
+	var got http.Header
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
+	req.Header.Set("Connection", "X-Hop")
+	req.Header.Set("X-Hop", "secret") // listed in Connection → stripped too
+	req.Header.Set("Keep-Alive", "timeout=5")
+	req.Header.Set("Te", "deflate") // "TE: trailers" is re-added by stdlib by design; use a non-trailers value
+	req.Header.Set("Transfer-Encoding", "chunked")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Proxy-Connection", "keep-alive")
+	req.Header.Set("Proxy-Authorization", "Basic abc")
+	req.Header.Set("X-Normal", "keepme")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	for _, h := range []string{
+		"Connection", "X-Hop", "Keep-Alive", "Te",
+		"Transfer-Encoding", "Upgrade", "Proxy-Connection", "Proxy-Authorization",
+	} {
+		assert.Empty(t, got.Get(h), "hop-by-hop header %s must not reach the backend", h)
+	}
+	assert.Equal(t, "keepme", got.Get("X-Normal"))
+}
+
+func TestServeHTTPStripsHopByHopHeadersFromResponse(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Connection", "X-Backend")
+		h.Set("X-Backend", "secret") // listed in Connection → stripped too
+		h.Set("Keep-Alive", "timeout=5")
+		h.Set("Upgrade", "websocket")
+		h.Set("Te", "gzip")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}))
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	for _, h := range []string{"Connection", "X-Backend", "Keep-Alive", "Upgrade", "Te"} {
+		assert.Empty(t, rec.Header().Get(h), "hop-by-hop header %s must not reach the client", h)
+	}
+}
+
+func TestServeHTTPDoesNotForwardConnectionClose(t *testing.T) {
+	var got string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Connection")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
+	req.Header.Set("Connection", "close")
+	req.Close = true // client asked to close after this request
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, got, "client Connection: close must not reach the backend (proxy keeps its own connection)")
+}

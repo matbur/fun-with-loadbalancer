@@ -23,6 +23,19 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 
 Retry dotyczy wyłącznie metod idempotentnych (`GET`, `HEAD`, `OPTIONS`): maksymalnie 2 próby, wykonywane tylko gdy błąd nastąpił przed wysłaniem jakichkolwiek bajtów do klienta (odpowiedź jest streamowana, bez buforowania w pamięci). Metody z efektami ubocznymi (`POST`, `PUT`, `PATCH`) nigdy nie są ponawiane, aby nie duplikować skutków.
 
+## Nagłówki hop-by-hop
+
+Proxy usuwa nagłówki hop-by-hop (RFC 7230 §6.1) **w obu kierunkach** — robi to automatycznie `httputil.ReverseProxy`:
+
+- z żądania do backendu: `Connection`, `Proxy-Connection`, `Keep-Alive`, `Proxy-Authenticate`, `Proxy-Authorization`, `Te`, `Trailer`, `Transfer-Encoding`, `Upgrade` oraz wszystkie nagłówki wymienione w nagłówku `Connection`;
+- z odpowiedzi do klienta: ten sam zestaw (w tym nagłówki wskazane przez `Connection` odpowiedzi);
+
+Klienckie `Connection: close` **nie jest przekazywane do backendu** — LB utrzymuje własne persistent connection (zamknięcie połączenia z klientem obsługuje `net/http`).
+
+Wyjątek wynikający z zachowania stdlib: gdy klient zgłosił `TE: trailers`, proxy dodaje `Te: trailers` do żądania backendu (issue 21096), żeby backend wiedział, że wspiera traillery.
+
+Zachowanie jest przypięte testami (`TestServeHTTPStripsHopByHopHeadersFromRequest/FromResponse`, `TestServeHTTPDoesNotForwardConnectionClose`).
+
 ## Zakres
 
 W zakresie: proxy HTTP, round-robin, health checki, timeouty, retry dla metod idempotentnych, graceful shutdown, metryki Prometheus, testy.

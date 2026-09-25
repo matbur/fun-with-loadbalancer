@@ -131,7 +131,7 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11b. Nagłówki hop-by-hop
 
-- [ ] Obsługa nagłówków hop-by-hop / `Connection: close`
+- [x] Obsługa nagłówków hop-by-hop / `Connection: close` — przypięte testami (stdlib `ReverseProxy` usuwa je automatycznie), dokumentacja w README
 
 ### 11c. Weighted round-robin / least-connections
 
