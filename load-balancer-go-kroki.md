@@ -159,4 +159,4 @@ Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej 
 
 ### 11i. Limity body requestu i limit równoległych requestów
 
-- [ ] Limity body requestu i limit równoległych requestów
+- [x] Limity body requestu i limit równoległych requestów — flagi `-max-body-bytes` (domyślnie 1 MiB, `0` = bez limitu) i `-max-concurrent` (domyślnie `0` = bez limitu) (+ klucze `max_body_bytes`/`max_concurrent` w pliku konfiguracyjnym, walidacja w `config.Parse`); body: szybka ścieżka po `Content-Length` → 413, transfery o nieznanej długości przerywane przez `http.MaxBytesReader`, `*http.MaxBytesError` → 413 w `StatusCodeForError` — bez tripa breakera i bez retry; równoległość: tokenowy semafor w proxy (`WithMaxConcurrent`), przy pełnym limicie 503 + access log `warn`; limity dotyczą tylko ruchu proxowanego; testy: config (domyślne/flagi/plik/negatywy), proxy (413 po Content-Length i chunked, body w limicie przechodzi, brak limitu domyślnie, brak tripa breakera, 503 przy pełnym semaforze, 2 requesty w limicie 2, warn w access logu) + README (sekcja „Limity")

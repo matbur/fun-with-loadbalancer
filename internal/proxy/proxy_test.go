@@ -3,10 +3,12 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -577,4 +579,214 @@ func TestServeHTTPLogsBackend5xxAsWarn(t *testing.T) {
 	assert.Equal(t, slog.LevelWarn, collector.records[0].Level)
 	assert.Equal(t, int64(http.StatusInternalServerError), recordAttrs(collector.records[0])["status"])
 	assert.Equal(t, b.URL.Host, recordAttrs(collector.records[0])["backend"])
+}
+
+func TestServeHTTPBodyLimitContentLength(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMaxBodyBytes(1024))
+
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/",
+		strings.NewReader(strings.Repeat("x", 2048)))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code,
+		"declared Content-Length over the limit must be rejected with 413")
+}
+
+func TestServeHTTPBodyLimitChunked(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMaxBodyBytes(1024))
+
+	// Chunked transfer: unknown length, so the limit must be enforced while
+	// streaming the body (http.MaxBytesReader) and map to 413, not 502.
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/",
+		strings.NewReader(strings.Repeat("x", 4096)))
+	req.ContentLength = -1
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+}
+
+func TestServeHTTPForwardsBodyWithinLimit(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.ReadAll(r.Body)
+		fmt.Fprintf(w, "%d", len(n))
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMaxBodyBytes(1024))
+
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/",
+		strings.NewReader(strings.Repeat("x", 512)))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "512", rec.Body.String(), "the whole body within the limit must be forwarded")
+}
+
+func TestServeHTTPNoLimitsByDefault(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.ReadAll(r.Body)
+		fmt.Fprintf(w, "%d", len(n))
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}))
+
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/",
+		strings.NewReader(strings.Repeat("x", 2<<20)))
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "2097152", rec.Body.String(), "without a configured limit big bodies pass through")
+}
+
+func TestServeHTTPBodyTooLargeDoesNotTripBreaker(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL,
+		balancer.WithBreakerThreshold(1),
+		balancer.WithBreakerCooldown(30*time.Second),
+	)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMaxBodyBytes(1024))
+
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/",
+		strings.NewReader(strings.Repeat("x", 4096)))
+	req.ContentLength = -1
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+
+	// The 413 is client-caused: it must not count as a backend failure, so
+	// with threshold 1 the circuit stays closed and the next request succeeds.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code, "body-too-large must not trip the circuit breaker")
+}
+
+func TestServeHTTPConcurrencyLimit(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMaxConcurrent(1))
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		srv.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	}()
+	<-entered // first request holds the only slot and is blocked in the backend
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
+		"the second request must be rejected while the server is at capacity")
+
+	close(release)
+	<-firstDone // first request completes
+}
+
+func TestServeHTTPConcurrentWithinLimit(t *testing.T) {
+	var started atomic.Int32
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started.Add(1)
+		<-release
+		fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMaxConcurrent(2))
+
+	done := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			srv.ServeHTTP(httptest.NewRecorder(),
+				httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+		}()
+	}
+	// Both must be running inside the backend at once (limit of 2 respected).
+	for range 2 {
+		for started.Load() < 2 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(release)
+	for range 2 {
+		<-done
+	}
+}
+
+func TestServeHTTPConcurrencyLimitLogsWarn(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+	collector := &recordHandler{}
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}),
+		WithMaxConcurrent(1), WithLogger(slog.New(collector)))
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		srv.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	}()
+	<-entered // first request holds the only slot
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+	// The first request is still blocked, so the rejection warn is the only
+	// record so far — the slot release happens only after we finish asserting.
+	require.Len(t, collector.records, 1)
+	assert.Equal(t, slog.LevelWarn, collector.records[0].Level)
+	assert.Equal(t, int64(http.StatusServiceUnavailable), recordAttrs(collector.records[0])["status"])
+
+	close(release)
+	<-firstDone
 }

@@ -30,6 +30,11 @@ type Config struct {
 	// LogFormat is one of text, json; LogLevel one of debug, info, warn, error.
 	LogFormat string
 	LogLevel  string
+
+	// MaxBodyBytes limits the request body size in bytes (0 = unlimited);
+	// MaxConcurrent caps the number of in-flight requests (0 = unlimited).
+	MaxBodyBytes int64
+	MaxConcurrent int
 }
 
 // fileConfig mirrors Config for YAML/JSON files. Pointers and nil slices
@@ -47,6 +52,8 @@ type fileConfig struct {
 	BreakerCooldown    *string  `json:"breaker_cooldown" yaml:"breaker_cooldown"`
 	LogFormat          *string  `json:"log_format" yaml:"log_format"`
 	LogLevel           *string  `json:"log_level" yaml:"log_level"`
+	MaxBodyBytes       *int64   `json:"max_body_bytes" yaml:"max_body_bytes"`
+	MaxConcurrent      *int     `json:"max_concurrent" yaml:"max_concurrent"`
 }
 
 func Parse(args []string) (Config, error) {
@@ -63,6 +70,8 @@ func Parse(args []string) (Config, error) {
 	var breakerCooldown time.Duration
 	var logFormat string
 	var logLevel string
+	var maxBodyBytes int64
+	var maxConcurrent int
 
 	fs.StringVar(&cfgFile, "config", "", "path to a YAML/JSON config file; explicitly set flags override file values")
 	fs.StringVar(&listen, "listen", ":8080", "address to listen on")
@@ -75,6 +84,8 @@ func Parse(args []string) (Config, error) {
 	fs.DurationVar(&breakerCooldown, "breaker-cooldown", 5*time.Second, "how long an open circuit stays open")
 	fs.StringVar(&logFormat, "log-format", "text", "log output format: text | json")
 	fs.StringVar(&logLevel, "log-level", "info", "log level: debug | info | warn | error")
+	fs.Int64Var(&maxBodyBytes, "max-body-bytes", 1<<20, "max request body size in bytes (0 = unlimited)")
+	fs.IntVar(&maxConcurrent, "max-concurrent", 0, "max concurrent in-flight requests (0 = unlimited)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -119,6 +130,8 @@ func Parse(args []string) (Config, error) {
 		}
 		logFormat = overlay(set, "log-format", logFormat, fc.LogFormat)
 		logLevel = overlay(set, "log-level", logLevel, fc.LogLevel)
+		maxBodyBytes = overlay(set, "max-body-bytes", maxBodyBytes, fc.MaxBodyBytes)
+		maxConcurrent = overlay(set, "max-concurrent", maxConcurrent, fc.MaxConcurrent)
 	}
 
 	cfg := Config{
@@ -132,6 +145,8 @@ func Parse(args []string) (Config, error) {
 		BreakerCooldown:    breakerCooldown,
 		LogFormat:          logFormat,
 		LogLevel:           logLevel,
+		MaxBodyBytes:       maxBodyBytes,
+		MaxConcurrent:      maxConcurrent,
 	}
 
 	if cfg.ListenAddr == "" {
@@ -161,6 +176,12 @@ func Parse(args []string) (Config, error) {
 	case "debug", "info", "warn", "error":
 	default:
 		return Config{}, fmt.Errorf("unknown log level %q (allowed: debug, info, warn, error)", cfg.LogLevel)
+	}
+	if cfg.MaxBodyBytes < 0 {
+		return Config{}, fmt.Errorf("max-body-bytes must not be negative")
+	}
+	if cfg.MaxConcurrent < 0 {
+		return Config{}, fmt.Errorf("max-concurrent must not be negative")
 	}
 
 	return cfg, nil

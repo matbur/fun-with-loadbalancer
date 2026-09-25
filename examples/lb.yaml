@@ -38,3 +38,7 @@ breaker_cooldown: 5s   # how long the circuit stays open before a retry
 # Structured logging (log/slog).
 log_format: text       # text | json
 log_level: info        # debug | info | warn | error
+
+# Request limits (proxied traffic only; admin/metrics/health endpoints are exempt).
+max_body_bytes: 1048576 # max request body size in bytes; 0 = unlimited
+max_concurrent: 0       # max concurrent in-flight requests; 0 = unlimited

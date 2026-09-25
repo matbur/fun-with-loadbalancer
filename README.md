@@ -13,6 +13,7 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 - **Brak retry dla metod nieidempotentnych** (`POST`, `PUT`, `PATCH`) — retry tylko dla `GET`/`HEAD`/`OPTIONS`, `maxAttempts = 2`, kolejna próba omija padający backend.
 - **Konfiguracja przez flagi lub plik YAML/JSON** (`-config`; flagi nadpisują plik) — lista backendów, adres listen, algorytm, wagi, breaker, logowanie, interwały health checka.
 - **Structured logging** (`log/slog`) — format `text`/`json` i poziom wybierane flagami; access log per request (method, path, status, duration, backend), odpowiedzi ≥500 jako warn; bez loggera proxy milczy.
+- **Limity** — max rozmiar body requestu (`-max-body-bytes`, domyślnie 1 MiB) i max równoległych requestów (`-max-concurrent`); przekroczenie body → `413`, brak miejsca → `503`.
 - **Graceful shutdown po `SIGTERM`/`SIGINT`** — dokończenie trwających requestów, zatrzymanie health checker'a.
 
 ## Błędy i retry
@@ -121,9 +122,16 @@ go run ./cmd/lb -backends http://localhost:9001,http://localhost:9002 \
 
 Access log pochodzi z proxy przez opcję `WithLogger` — bez niej (np. w testach) proxy nie loguje niczego.
 
+## Limity
+
+- **Body requestu** (`-max-body-bytes`, domyślnie `1 MiB`; `0` = bez limitu): request z deklarowanym `Content-Length` ponad limit dostaje natychmiast `413`. Body o nieznanej długości (chunked) przerywane jest w trakcie przesyłania przez `http.MaxBytesReader`, a błąd `*http.MaxBytesError` mapowany jest na `413` w `StatusCodeForError`. Taki błąd jest **błędem klienta** — nie otwiera circuit breakera i nie wyzwala retry (test `TestServeHTTPBodyTooLargeDoesNotTripBreaker`).
+- **Równoległe requesty** (`-max-concurrent`, domyślnie `0` = bez limitu): tokenowy semafor w proxy — przy pełnym limicie nowy request dostaje `503` bez dotykania backendów (access log na poziomie `warn`).
+
+Oba limity dotyczą wyłącznie ruchu proxowanego — endpointy `/metrics`, `/backends`, `/live`, `/ready` im nie podlegają.
+
 ## Zakres
 
-W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends`), graceful shutdown, metryki Prometheus, testy.
+W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, testy.
 
 ## Świadome ograniczenia
 
@@ -163,6 +171,8 @@ go run ./cmd/lb \
   -breaker-cooldown 5s              # czas otwarcia obwodu przed próbą
   -log-format text                  # text | json
   -log-level info                   # debug | info | warn | error
+  -max-body-bytes 1048576           # max body requestu w bajtach; 0 = bez limitu
+  -max-concurrent 0                 # max równoległych requestów; 0 = bez limitu
 ```
 
 Przykład z wagami i least-connections:
@@ -203,6 +213,10 @@ health_check_every: 10s
 health_check_timeout: 2s
 breaker_threshold: 3              # kolejne błędy transportu otwierające obwód
 breaker_cooldown: 5s              # czas otwarcia obwodu przed próbą
+log_format: text                  # text | json
+log_level: info                   # debug | info | warn | error
+max_body_bytes: 1048576           # max body requestu w bajtach; 0 = bez limitu
+max_concurrent: 0                 # max równoległych requestów; 0 = bez limitu
 ```
 
 `lb.json` (odpowiednik, bez komentarzy — JSON ich nie wspiera):
@@ -213,7 +227,11 @@ breaker_cooldown: 5s              # czas otwarcia obwodu przed próbą
   "backends": ["http://localhost:9001", "http://localhost:9002"],
   "algorithm": "least-connections",
   "breaker_threshold": 3,
-  "breaker_cooldown": "5s"
+  "breaker_cooldown": "5s",
+  "log_format": "json",
+  "log_level": "debug",
+  "max_body_bytes": 1048576,
+  "max_concurrent": 0
 }
 ```
 

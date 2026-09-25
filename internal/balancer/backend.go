@@ -103,6 +103,9 @@ type upstreamErrorWriter interface {
 }
 
 func StatusCodeForError(err error) int {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		return http.StatusRequestEntityTooLarge
+	}
 	if isTimeout(err) {
 		return http.StatusGatewayTimeout
 	}

@@ -246,3 +246,45 @@ func TestParseFlagsOverrideConfigLogFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "text", cfg.LogFormat)
 }
+func TestParseLimitDefaults(t *testing.T) {
+	cfg, err := Parse([]string{"-backends", "http://127.0.0.1:1"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1<<20), cfg.MaxBodyBytes)
+	assert.Equal(t, 0, cfg.MaxConcurrent)
+}
+
+func TestParseLimitFlags(t *testing.T) {
+	cfg, err := Parse([]string{
+		"-backends", "http://127.0.0.1:1",
+		"-max-body-bytes", "4096",
+		"-max-concurrent", "10",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(4096), cfg.MaxBodyBytes)
+	assert.Equal(t, 10, cfg.MaxConcurrent)
+}
+
+func TestParseNegativeLimitsRejected(t *testing.T) {
+	_, err := Parse([]string{"-backends", "http://127.0.0.1:1", "-max-body-bytes", "-1"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "max-body-bytes")
+
+	_, err = Parse([]string{"-backends", "http://127.0.0.1:1", "-max-concurrent", "-5"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "max-concurrent")
+}
+
+func TestParseConfigFileLimitFields(t *testing.T) {
+	path := writeConfigFile(t, "lb.yaml", "max_body_bytes: 2048\nmax_concurrent: 4\nbackends: [http://localhost:9001]\n")
+	cfg, err := Parse([]string{"-config", path})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2048), cfg.MaxBodyBytes)
+	assert.Equal(t, 4, cfg.MaxConcurrent)
+}
+
+func TestParseFlagsOverrideConfigLimits(t *testing.T) {
+	path := writeConfigFile(t, "lb.yaml", "max_body_bytes: 2048\nbackends: [http://localhost:9001]\n")
+	cfg, err := Parse([]string{"-config", path, "-max-body-bytes", "1024"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1024), cfg.MaxBodyBytes)
+}
