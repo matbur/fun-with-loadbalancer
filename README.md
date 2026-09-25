@@ -25,18 +25,33 @@ Retry dotyczy wyłącznie metod idempotentnych (`GET`, `HEAD`, `OPTIONS`): maksy
 
 ## Zakres
 
-W zakresie: proxy HTTP, round-robin, health checki, timeouty, retry dla metod idempotentnych, graceful shutdown, testy.
+W zakresie: proxy HTTP, round-robin, health checki, timeouty, retry dla metod idempotentnych, graceful shutdown, metryki Prometheus, testy.
 
 ## Świadome ograniczenia
 
 - **Round-robin bez wag** — zakłada podobny koszt requestów; przy zróżnicowanych backendach lepszy byłby weighted round-robin lub least-connections.
-- **Brak metryk** — żaden endpoint nie eksponuje request count, latencji ani kodów statusu; do monitoringu produkcyjnego trzeba by dodać Prometheus.
 - **Brak dynamicznej konfiguracji** — lista backendów jest stała w trakcie działania procesu; zmiana wymaga restartu.
 - **Retry tylko dla metod idempotentnych i tylko przed wysłaniem bajtów do klienta** — błędy w trakcie streamowania odpowiedzi nie są ponawiane, metody z efektami ubocznymi (`POST`/`PUT`/`PATCH`) nigdy.
 - **Brak retry „w ciemno" w `ErrorHandler`** — retry jest realizowane na poziomie serwera, gdzie wiadomo, czy odpowiedź dotarła już do klienta.
 - **Health check z progiem, ale bez circuit breakera** — hysteresis (`failureThreshold=3`, `successThreshold=2`) ogranicza flapping, ale nie ma pełnego otwierania/zamykania obwodu.
 - **WebSocket/upgrade poza zakresem** — `ReverseProxy` umie obsługiwać upgrade'y, ale zachowanie przy nich nie jest przetestowane ani wspierane.
 - **Brak limitu body requestu i limitu równoległych requestów** — obrona przed przeciążeniem opiera się na limitach połączeń wspólnego transportu, nie na semaforze aplikacyjnym.
+
+## Metryki
+
+Endpoint `/metrics` (format Prometheus, protobuf/text) działa na tym samym listenerze co proxy:
+
+- `lb_http_requests_total{method,status}` — liczba requestów wg metody i kodu odpowiedzi,
+- `lb_http_request_duration_seconds{method}` — histogram latencji,
+- `lb_http_requests_in_flight` — requesty aktualnie w trakcie obsługi,
+- `lb_backend_requests_total{backend}` — próby kierowania requestów do backendu (host),
+- `lb_backend_errors_total{backend}` — błędy transportu per backend (podstawa `502`/`504`).
+
+Przykład:
+
+```bash
+curl http://localhost:8080/metrics
+```
 
 ## Uruchomienie
 

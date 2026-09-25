@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"fun-with-loadbalancer/internal/balancer"
+	"fun-with-loadbalancer/internal/metrics"
 )
 
 func TestServeHTTPForwardsRequest(t *testing.T) {
@@ -243,4 +244,54 @@ func TestServeHTTPConcurrentRequests(t *testing.T) {
 
 	assert.Equal(t, int32(total/2), count1.Load())
 	assert.Equal(t, int32(total/2), count2.Load())
+}
+
+func TestServeHTTPWithMetricsCountsBackendRequests(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	b, err := balancer.NewBackend(backend.URL)
+	require.NoError(t, err)
+
+	m := metrics.New()
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMetrics(m))
+
+	for range 3 {
+		req := httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	assert.Equal(t, 3.0, m.BackendRequests(b.URL.Host))
+}
+
+func TestServeHTTPWithMetricsCountsBackendErrors(t *testing.T) {
+	// Start a backend, then take it down: dialing it will fail with
+	// connection refused.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := backend.URL
+	backend.Close()
+
+	b, err := balancer.NewBackend(url)
+	require.NoError(t, err)
+
+	m := metrics.New()
+	srv := NewServer(balancer.NewPool([]*balancer.Backend{b}), WithMetrics(m))
+
+	// GET is retryable → 2 attempts, both fail → 502.
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://frontend.example/", nil))
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, 2.0, m.BackendErrors(b.URL.Host))
+	assert.Equal(t, 2.0, m.BackendRequests(b.URL.Host))
+
+	// POST is not retryable → 1 attempt → 502.
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://frontend.example/", nil))
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+	assert.Equal(t, 3.0, m.BackendErrors(b.URL.Host))
+	assert.Equal(t, 3.0, m.BackendRequests(b.URL.Host))
 }

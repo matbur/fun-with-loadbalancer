@@ -123,12 +123,40 @@ Nie zaczynaj od metryk, retry i dynamicznej konfiguracji — najpierw poprawny p
 
 ## 11. Opcjonalnie, jeśli zostanie czas
 
-- [ ] Prometheus metrics (request count, latency, status codes, backend errors)
+Kroki opcjonalne i niezależne — każdy można realizować osobno, w dowolnej kolejności.
+
+### 11a. Metryki Prometheus
+
+- [x] Request count, latency, status codes, backend errors eksponowane przez `/metrics`
+
+### 11b. Nagłówki hop-by-hop
+
 - [ ] Obsługa nagłówków hop-by-hop / `Connection: close`
+
+### 11c. Weighted round-robin / least-connections
+
 - [ ] Weighted round-robin / least-connections
+
+### 11d. Dynamiczne dodawanie/usuwanie backendów
+
 - [ ] Dynamiczne dodawanie/usuwanie backendów
+
+### 11e. Circuit breaker
+
 - [ ] Circuit breaker
+
+### 11f. Konfiguracja YAML/JSON
+
 - [ ] Konfiguracja YAML/JSON
+
+### 11g. Endpointy `/ready` i `/live`
+
 - [ ] Endpointy `/ready` i `/live`
+
+### 11h. Structured logging
+
 - [ ] Structured logging
+
+### 11i. Limity body requestu i limit równoległych requestów
+
 - [ ] Limity body requestu i limit równoległych requestów

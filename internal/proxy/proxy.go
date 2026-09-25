@@ -4,16 +4,31 @@ import (
 	"net/http"
 
 	"fun-with-loadbalancer/internal/balancer"
+	"fun-with-loadbalancer/internal/metrics"
 )
 
 const maxAttempts = 2
 
 type Server struct {
-	pool *balancer.Pool
+	pool    *balancer.Pool
+	metrics *metrics.Metrics
 }
 
-func NewServer(pool *balancer.Pool) *Server {
-	return &Server{pool: pool}
+type Option func(*Server)
+
+// WithMetrics enables per-backend request/error accounting for the server.
+func WithMetrics(m *metrics.Metrics) Option {
+	return func(s *Server) {
+		s.metrics = m
+	}
+}
+
+func NewServer(pool *balancer.Pool, opts ...Option) *Server {
+	s := &Server{pool: pool}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +55,20 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	backend.Proxy.ServeHTTP(w, r)
+	s.observeBackend(backend)
+	tw := newTrackingWriter(w)
+	backend.Proxy.ServeHTTP(tw, r)
+
+	if tw.err == nil {
+		return
+	}
+	s.observeBackendError(backend)
+	if tw.wroteHeader {
+		return
+	}
+	status := balancer.StatusCodeForError(tw.err)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.Error(w, http.StatusText(status), status)
 }
 
 func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
@@ -54,12 +82,14 @@ func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		s.observeBackend(backend)
 		tw.reset()
 		backend.Proxy.ServeHTTP(tw, r)
 
 		if tw.err == nil {
 			return
 		}
+		s.observeBackendError(backend)
 		lastErr = tw.err
 		if tw.wroteHeader {
 			return
@@ -69,4 +99,18 @@ func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
 	status := balancer.StatusCodeForError(lastErr)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.Error(w, http.StatusText(status), status)
+}
+
+func (s *Server) observeBackend(b *balancer.Backend) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.ObserveBackendRequest(b.URL.Host)
+}
+
+func (s *Server) observeBackendError(b *balancer.Backend) {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.ObserveBackendError(b.URL.Host)
 }

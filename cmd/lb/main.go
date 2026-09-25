@@ -13,6 +13,7 @@ import (
 	"fun-with-loadbalancer/internal/balancer"
 	"fun-with-loadbalancer/internal/config"
 	"fun-with-loadbalancer/internal/health"
+	"fun-with-loadbalancer/internal/metrics"
 	"fun-with-loadbalancer/internal/proxy"
 )
 
@@ -25,6 +26,7 @@ func main() {
 	}
 
 	transport := balancer.NewTransport()
+	m := metrics.New()
 
 	backends := make([]*balancer.Backend, 0, len(cfg.Backends))
 	for _, rawURL := range cfg.Backends {
@@ -47,9 +49,13 @@ func main() {
 	)
 	go checker.Run(ctx)
 
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", m.Handler())
+	mux.Handle("/", m.Wrap(proxy.NewServer(pool, proxy.WithMetrics(m))))
+
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           proxy.NewServer(pool),
+		Handler:           mux,
 		ReadTimeout:       5 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
