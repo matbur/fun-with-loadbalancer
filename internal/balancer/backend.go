@@ -79,9 +79,17 @@ func (b *Backend) Active() int {
 	return int(b.active.Load())
 }
 
-// Available reports whether the backend can receive traffic: it must be
-// healthy according to the health checker and its circuit must be closed (or
-// half-open, i.e. probing).
+// Available reports whether the backend can receive traffic: it must be healthy
+// according to the health checker and its circuit must admit a request. A
+// half-open circuit admits exactly one caller — the probe — until that probe
+// reports, so repeated calls from concurrent requests do not all pass.
+//
+// The probe claim is a side effect, so callers that rank several candidates must
+// expect a loser to have consumed an admission: Pool's weighted and
+// least-connections scans do exactly that, leaving a recovering backend out of
+// rotation until probeTimeout or ReportHealthy, whichever comes first.
+// Round-robin, the default, returns the first candidate it admits and is
+// unaffected.
 func (b *Backend) Available() bool {
 	return b.Healthy.Load() && b.breaker.allow()
 }
@@ -96,6 +104,15 @@ func (b *Backend) ReportFailure() {
 // the backend's circuit breaker.
 func (b *Backend) ReportSuccess() {
 	b.breaker.reportSuccess()
+}
+
+// ReportHealthy tells the breaker that an out-of-band probe (the health
+// checker's /healthz request) reached the backend, recovering an open or
+// half-open circuit. Unlike ReportSuccess it may close an open circuit, and it
+// leaves a closed one alone — that asymmetry is what keeps a closed circuit's
+// failure counter measuring request traffic only.
+func (b *Backend) ReportHealthy() {
+	b.breaker.recover()
 }
 
 type upstreamErrorWriter interface {

@@ -84,9 +84,13 @@ Obok pasywnego health checka każdy backend ma **circuit breaker** chroniący pr
 
 - **Domknięty (closed)** — normalny ruch; kolejne błędy transportu liczą się do progu.
 - **Otwarty (open)** — po `threshold` (=3) kolejnych błędach backend wypada z rotacji (`Pool.Next()` go pomija) do końca `cooldown` (=5s).
-- **Półotwarty (half-open)** — po cooldownie backend wraca jako „próba": pierwszy request decyduje — sukces domyka obwód, błąd otwiera go ponownie z nowym cooldownem.
+- **Półotwarty (half-open)** — po cooldownie backend wraca jako „próba": pierwszy request decyduje — sukces domyka obwód, błąd otwiera go ponownie z nowym cooldownem. W stanie half-open przepuszczany jest **dokładnie jeden** request naraz; kolejne dostają `503` albo trafiają na inny backend, dopóki ten request się nie rozstrzygnie. Jeśli nigdy nie zaraportuje wyniku (odpowiedź przerwana w połowie → `ReverseProxy` rzuca panic, więc ani `ReportSuccess`, ani `ReportFailure` nie zdążą), następny request przejmuje po 30s (`probeTimeout`) — inaczej backend wypadałby z rotacji do restartu procesu.
 
 W przeciwieństwie do health checka (cykliczny `GET /healthz` co 10s) breaker reaguje **natychmiast** na błędy obsługi requestów — backend może wypaść z rotacji, zanim pierwszy cykl checkera to zauważy. Liczone są wyłącznie błędy transportu (te dające `502`/`504`); kody HTTP z backendu (np. `500`) są przekazywane dalej i nie otwierają obwodu.
+
+W drugą stronę: **zdrowy `/healthz` zamyka obwód** (`Backend.ReportHealthy`, wywoływane z health checkera na tej samej histerezie co `Healthy` — 2 kolejne sukcesy). To jedyna droga powrotu dla load balancera bez ruchu: bez requestów nikt nie wygra przejścia open → half-open i nikt nie rozstrzygnie próby, więc obwód zostawałby otwarty do restartu procesu, a `/ready` wskazywałby `503` dla backendu, który odpowiada. Odzyskanie **nie** zeruje licznika błędów przy zamkniętym obwodzie — inaczej backend tracący jeden request na pięć nigdy nie osiągnąłby progu.
+
+Cena tej decyzji: backend, który odpowiada `200` na `/healthz`, ale wywala ruch (np. wyczerpany pool połączeń), ma obwód zamykany przez checker co 2 cykle. Dla takiego backendu breaker przestaje reagować w 3 requestach i reaguje dopiero po ~2 interwałach checkera + 3 requesty.
 
 Parametry ustawia się per backend (`WithBreakerThreshold`, `WithBreakerCooldown`), raportowanie jest automatyczne — proxy karmi breaker sukcesem/błędem każdej próby. Retry i breaker współpracują: jeśli pierwsza próba otworzy obwód, druga próba omija ten backend.
 
@@ -97,7 +101,7 @@ Endpointy dla orchestratorów (np. Kubernetes liveness/readiness probes):
 - `GET /live` — **liveness**: `200`, dopóki proces działa; nie ma wewnętrznego stanu do sprawdzenia.
 - `GET /ready` — **readiness**: `200`, gdy co najmniej jeden backend może przyjąć ruch — jest zdrowy wg health checka *i* ma nieotwarty obwód circuit breakera; `503` w przeciwnym razie (ten sam wynik co odpowiedź proxy „no healthy backends").
 
-`/ready` to **pasywny odczyt** (`Pool.Ready()`): w przeciwieństwie do `Available()` nie powoduje przejścia open → half-open na breakerze — samo sondowanie readiness nie zmienia stanu obwodu (test `TestReadyDoesNotTripBreaker`).
+`/ready` to **pasywny odczyt** (`Pool.Ready()`): w przeciwieństwie do `Available()` nie powoduje przejścia open → half-open na breakerze — samo sondowanie readiness nie zmienia stanu obwodu (test `TestReadyDoesNotTripBreaker`). Powrot do `200` po tym jak obwód się otworzył przychodzi z health checkera (zdrowy `/healthz` zamyka obwód), więc `/ready` może pokazywać `503` do dwóch cykli checkera po otwarciu.
 
 ## Logi (structured logging)
 

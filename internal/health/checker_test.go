@@ -104,6 +104,54 @@ func TestCheckerRecoversAfterSuccessThreshold(t *testing.T) {
 	assert.True(t, b.Healthy.Load(), "backend should be healthy after successThreshold successes")
 }
 
+// TestCheckerRecoversOpenCircuit is the regression test for "the health check
+// activates the backend": a healthy /healthz must close a circuit that only
+// request traffic opened, with no traffic served in between.
+func TestCheckerRecoversOpenCircuit(t *testing.T) {
+	var healthy atomic.Bool
+	healthy.Store(true)
+	srv := newToggleServer(&healthy)
+	defer srv.Close()
+
+	b := mustBackend(t, srv.URL)
+	for range 3 { // cooldown defaults to 5s: only the health check can recover
+		b.ReportFailure()
+	}
+	require.False(t, b.Available(), "the circuit must be open to start with")
+
+	pool := balancer.NewPool([]*balancer.Backend{b})
+	c := New(pool)
+	for range successThreshold {
+		c.checkAll(context.Background())
+	}
+
+	assert.True(t, b.Available(), "a healthy /healthz must close the circuit")
+	assert.True(t, pool.Ready(), "and the pool must be ready again")
+}
+
+// TestCheckerDoesNotResetFailureCounter pins the other half: recovery fires only
+// for an actually-open circuit, so a check landing between two failures does not
+// stop the third from opening it.
+func TestCheckerDoesNotResetFailureCounter(t *testing.T) {
+	var healthy atomic.Bool
+	healthy.Store(true)
+	srv := newToggleServer(&healthy)
+	defer srv.Close()
+
+	b := mustBackend(t, srv.URL)
+	pool := balancer.NewPool([]*balancer.Backend{b})
+	c := New(pool)
+
+	// Health succeeds on every cycle while every request fails. The loop stops
+	// the moment the circuit opens — a check after that is what recovery is for.
+	for range failureThreshold {
+		c.checkAll(context.Background())
+		b.ReportFailure()
+	}
+
+	assert.False(t, b.Available(), "the circuit must open despite the health checks")
+}
+
 func TestCheckerTimeoutDoesNotBlock(t *testing.T) {
 	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

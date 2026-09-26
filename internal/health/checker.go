@@ -144,6 +144,12 @@ func (c *Checker) update(b *balancer.Backend, ok bool) {
 		st.consecutiveSuccess++
 		if st.consecutiveSuccess >= successThreshold {
 			b.Healthy.Store(true)
+			// A backend that answers its health endpoint is reachable, so a
+			// circuit left open by request traffic has nothing left to protect
+			// against. Same hysteresis as Healthy above, so the two cannot
+			// disagree; without it an idle load balancer has no way back, since
+			// no request ever resolves half-open.
+			b.ReportHealthy()
 		}
 	default:
 		st.consecutiveSuccess = 0

@@ -4,7 +4,7 @@ Scope: whole project (all non-test and test Go sources, `README.md`, `examples/l
 Baseline: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` all pass.
 Findings below were reproduced with throwaway tests (since removed).
 
-Status: **1, 2 — fixed** (see the resolution note under each finding). 3–8 open.
+Status: **1, 2, 3 — fixed. 4 — partially fixed** (see the resolution note under each finding). 5–8 open.
 
 ---
 
@@ -57,7 +57,7 @@ log line, and whether `RemoveBackend` should reset `active` alongside `currentWe
 Done in `internal/proxy/proxy.go`: the "route one request to a backend" step is now the single
 helper `serveOn` (`proxy.go:218-232`), which defers the release, and both `serveDirect` and
 `serveWithRetry` call it. The release now runs during panic unwinding, so an aborted response
-gives its in-flight slot back. No change on the normal path (`tw.reset()` on the fresh writer in
+gives back its in-flight count. No change on the normal path (`tw.reset()` on the fresh writer in
 `serveDirect` is a no-op; the metric observation still happens before `Acquire`).
 
 Regression test: `TestServeHTTPReleasesInFlightSlotOnAbortedResponse` in
@@ -146,7 +146,7 @@ documented local/dev tradeoff, not part of this finding.
 
 ---
 
-## 3. [Low-Medium] Half-open lets every concurrent request through, not a single probe
+## 3. [Low-Medium] ✅ FIXED — Half-open lets every concurrent request through, not a single probe
 
 `internal/balancer/circuit_breaker.go:44-62`
 
@@ -165,9 +165,56 @@ common simplification for small breakers, but the comment describes behavior the
 have. Either gate half-open with a concurrent-probe counter (allow N, then reject until a probe
 resolves) or correct the comment to match reality.
 
+### Resolution
+
+Done, via the concurrent-probe option rather than by weakening the comment: half-open now admits
+exactly one probe at a time.
+
+`internal/balancer/circuit_breaker.go` gains a `probeAt atomic.Int64` — the unix-nano moment the
+probe was admitted, or 0 when no probe is in progress. `claimProbe()` takes that admission with a
+`CompareAndSwap`, so of the goroutines racing for it exactly one wins; `close()` and `open()` both
+end it, so a verdict always gives it up. Measured before the fix: 100 of 100 sequential
+`allow()` calls were admitted, and 64 of 64 under real goroutine contention; both are 1 after.
+
+`probeTimeout = 30s` (`circuit_breaker.go:38`) bounds how long a probe may keep its admission, and
+this bound is load-bearing, not defensive padding. The one case that never reports a verdict is the
+abort path from finding 1: a response that fails mid-copy makes `httputil.ReverseProxy` panic out
+of `ServeHTTP`, so neither `ReportSuccess` nor `ReportFailure` runs. With a plain counter that
+probe would hold its admission forever, and since the health checker only writes `Backend.Healthy`
+and nothing else ever moves the breaker, the backend would stay out of rotation until the process
+restarts — turning this fix into a strictly worse outage than the one it repairs. A probe admitted
+longer ago than `probeTimeout` is taken over by the next `claimProbe`. 30s matches the server's
+`WriteTimeout`, so a legitimate slow probe is never cut off.
+
+Tests added to `internal/balancer/circuit_breaker_test.go`:
+`TestCircuitBreakerHalfOpenAdmitsSingleProbe` (the 100-call check),
+`TestCircuitBreakerHalfOpenAdmitsSingleProbeUnderConcurrency` (64 goroutines released from a
+`WaitGroup`, since that is the case a sequential check cannot reach),
+`TestCircuitBreakerHalfOpenProbeEndsAdmission`,
+`TestCircuitBreakerHalfOpenReclaimsAbandonedProbe` (backdates `probeAt` to simulate the abort
+path — no 30s sleep) and `TestPoolHalfOpenBackendReceivesOneRequest` (pool-level: one request, then
+`nil`, then back in rotation after the probe succeeds). Verified all four of the behavioural ones
+fail against the old `allow()` and pass after. `go build ./...`, `go vet ./...`, `go test ./...`,
+`go test -race ./...` and `go test -race -count=30 -run 'CircuitBreaker|HalfOpen'` all pass.
+
+`README.md:87` updated to state the single-probe rule and the 30s reclaim, so the docs match the
+code rather than the other way round.
+
+One honest consequence, documented on `Backend.Available()`: the claim is a side effect, and
+`nextWeighted`/`nextLeastConnections` rank candidates by calling `Available()` on each one, so a
+half-open backend that *loses* the ranking has consumed an admission and stays out of rotation
+until `probeTimeout` elapses. Fixing it properly means splitting passive availability from the claim
+and re-ranking on a lost claim, which touches the two hot-path selection loops; the wart is
+bounded, cannot misroute or produce spurious 503s, and is strictly an improvement on the previous
+behaviour. The default round-robin scan returns the first candidate it admits and is unaffected.
+Finding 4 narrows the window further: the health checker now closes a stuck circuit on its own.
+
+Still open, deliberately: findings 4 and 6 both concern the same passive-vs-active asymmetry from
+the other side (`/ready` reads `isOpen()`, the proxy reads `allow()`), and are not addressed here.
+
 ---
 
-## 4. [Low] `/ready` can report `503` at moments when the proxy would still route traffic
+## 4. [Low] ⚠️ PARTIALLY FIXED — `/ready` can report `503` at moments when the proxy would still route traffic
 
 `Pool.Ready()` (`pool.go:76-83`) uses `breaker.isOpen()`, a passive read, while the proxy path
 uses `Available()` → `allow()`, which performs the lazy open → half-open transition once the
@@ -189,6 +236,39 @@ are fine — the readiness signal and the routing decision disagree.
 
 If `/ready` is meant to mirror "can serve traffic right now", either treat "open but cooldown
 elapsed" as ready, or let a successful `/healthz` close the circuit.
+
+### Resolution
+
+The second of the two suggested options was taken, by request: **a healthy `/healthz` now closes the
+circuit** (`Backend.ReportHealthy` → `circuitBreaker.recover()`), called from
+`internal/health/checker.go` `update` on the *same* hysteresis that sets `Healthy` (2 consecutive
+successes), so the health flag and the breaker cannot disagree.
+
+This removes the part of the finding that was a real outage. Before, an idle LB's only route back
+was a half-open probe, which requires traffic, so the circuit stayed open and `/ready` stayed `503`
+for backends that were answering perfectly. Now recovery is driven out of band, and `/ready` returns
+to `200` within at most two checker cycles instead of never.
+
+`recover()` is a no-op in `circuitClosed`, and that restriction is the point: the failure counter
+measures request handling, so a health check that cleared it on every cycle would mean a backend
+failing one request in five never reached `threshold` and the breaker never fired. Only an actually
+open (or half-open) circuit is recovered, and the failure counter is reset only in that case.
+
+`TestCheckerRecoversOpenCircuit` (health, cooldown set to an hour so only the checker can recover)
+fails against the previous checker and passes now. `TestCheckerDoesNotResetFailureCounter` pins the
+no-op-in-closed half: a successful check landing *between* two failures must not stop the third from
+opening the circuit. In `internal/balancer`, `TestCircuitBreakerReportHealthyRecoversOpenCircuit`,
+`...LeavesClosedCircuitAlone` and `...RecoversHalfOpen` cover the breaker transitions directly,
+including a stalled probe whose late verdict must not re-open a circuit the health check closed.
+
+**What is still open.** The two readings still disagree *at a given instant*, which is the other half
+of this finding: `Pool.Ready()` calls `isOpen()`, so between the moment the cooldown elapses and the
+next successful health check, `/ready` still says `503` while `Next()` would hand out that backend.
+That window is now bounded by the checker interval (≤2 cycles by default) instead of being unbounded,
+which is why this is marked partially rather than fully fixed. Closing it completely would mean
+`Ready()` treating "open but cooldown elapsed" as ready, which `TestReadyDoesNotTripBreaker`
+(`cmd/lb/healthz_test.go:85`) currently forbids — changing that is a separate decision about what
+`/ready` is meant to mean, not a bug fix.
 
 ---
 
