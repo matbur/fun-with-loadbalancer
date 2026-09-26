@@ -135,7 +135,7 @@ Access log pochodzi z proxy przez opcję `WithLogger` — bez niej (np. w testac
 
 ## Limity
 
-- **Body requestu** (`-max-body-bytes`, domyślnie `1 MiB`; `0` = bez limitu): request z deklarowanym `Content-Length` ponad limit dostaje natychmiast `413`. Body o nieznanej długości (chunked) przerywane jest w trakcie przesyłania przez `http.MaxBytesReader`, a błąd `*http.MaxBytesError` mapowany jest na `413` w `StatusCodeForError`. Taki błąd jest **błędem klienta** — nie otwiera circuit breakera i nie wyzwala retry (test `TestServeHTTPBodyTooLargeDoesNotTripBreaker`).
+- **Body requestu** (`-max-body-bytes`, domyślnie `1 MiB`; `0` = bez limitu): request z deklarowanym `Content-Length` ponad limit dostaje natychmiast `413`. Body o nieznanej długości (chunked) przerywane jest w trakcie przesyłania przez `http.MaxBytesReader`, a błąd `*http.MaxBytesError` rozpoznawany jest w `clientStatusFor` i mapowany na `413`. Taki błąd jest **błędem klienta** — nie otwiera circuit breakera i nie wyzwala retry (test `TestServeHTTPBodyTooLargeDoesNotTripBreaker`).
 - **Równoległe requesty** (`-max-concurrent`, domyślnie `0` = bez limitu): tokenowy semafor w proxy — przy pełnym limicie nowy request dostaje `503` bez dotykania backendów (access log na poziomie `warn`).
 
 Oba limity dotyczą wyłącznie ruchu proxowanego — endpointy `/metrics`, `/backends`, `/live`, `/ready` im nie podlegają.
@@ -160,7 +160,7 @@ W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-conn
 - **Brak retry „w ciemno" w `ErrorHandler`** — retry jest realizowane na poziomie serwera, gdzie wiadomo, czy odpowiedź dotarła już do klienta.
 - **Circuit breaker tylko dla błędów transportu** — progi health checka (`failureThreshold=3`, `successThreshold=2`) i breakera działają niezależnie; kody 5xx z backendu nie otwierają obwodu (są przekazywane dalej).
 - **WebSocket/upgrade poza zakresem** — `ReverseProxy` umie obsługiwać upgrade'y, ale zachowanie przy nich nie jest przetestowane ani wspierane.
-- **Brak limitu body requestu i limitu równoległych requestów** — obrona przed przeciążeniem opiera się na limitach połączeń wspólnego transportu, nie na semaforze aplikacyjnym.
+- **Brak domyślnego limitu równoległych requestów** — `-max-concurrent` wynosi `0`, więc liczba współbieżnych requestów ogranicza tylko to, co zdolają przepuścić zasoby procesu; jedynym twardym progiem jest `MaxConnsPerHost: 100` transportu, a ten dotyczy połączeń wychodzących do backendów. Limit body jest włączony domyślnie (1 MiB), ale skoro `-read-timeout` to `0`, klient może wgrywać te 1 MiB dowolnie długo.
 
 ## Metryki
 

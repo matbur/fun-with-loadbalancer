@@ -4,7 +4,7 @@ Scope: whole project (all non-test and test Go sources, `README.md`, `examples/l
 Baseline: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` all pass.
 Findings below were reproduced with throwaway tests (since removed).
 
-Status: **1–4, 7, 9 — fixed** (see the resolution note under each finding). 5, 6, 8 open.
+Status: **1–4, 7–9 — fixed** (see the resolution note under each finding). 5, 6 open.
 
 ---
 
@@ -365,6 +365,28 @@ including the body, and `-max-body-bytes` bounds it by size.
 Both limits are implemented (`internal/proxy/proxy.go:46-61`, `46-102`), have flags, are described
 in the "Limity" section (`README.md:125-130`), and appear in `examples/lb.yaml`. Only this
 limitations bullet is stale; it should be deleted or rewritten.
+
+### Resolution
+
+Rewritten rather than deleted, because the concern behind it is real — the bullet just described it
+wrongly, and the truth is narrower than "no limits exist".
+
+The accurate residual limitation is about concurrency, not the body: `-max-body-bytes` defaults to
+1 MiB, so the body limit *is* on out of the box. What is not bounded by default is how many requests
+run at once — `-max-concurrent` is `0`, and since finding 7 also made `-read-timeout` `0`, the only
+hard ceiling left is the transport's `MaxConnsPerHost: 100`, which counts *outbound* connections to
+backends and says nothing about inbound load. The new bullet says exactly that, and adds the
+consequence of the finding-7 default: a client may trickle its 1 MiB for as long as it likes.
+
+Also corrected a sentence the finding 9 fix made stale: the "Limity" section claimed
+`*http.MaxBytesError` is mapped to `413` in `StatusCodeForError`, but the proxy now intercepts it in
+`clientStatusFor` before that — the client never reaches `StatusCodeForError` for a body limit. The
+sentence now names the function that actually runs.
+
+Checked the rest of the section while there: the other six bullets (round-robin default, open
+`/backends`, retry scope, no blind retry in `ErrorHandler`, breaker on transport errors only, no
+WebSocket support) are all still accurate. No other contradiction about the limits remains — every
+mention of `413`, `503` or `0 = bez limitu` now agrees with the code and with `examples/lb.yaml`.
 
 ---
 
