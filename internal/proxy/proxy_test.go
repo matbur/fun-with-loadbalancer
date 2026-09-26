@@ -440,6 +440,76 @@ func TestServeHTTPLeastConnections(t *testing.T) {
 	<-firstDone
 }
 
+// abortingBackend starts a backend that promises more body than it sends and
+// then drops the connection, so the proxy's response copy fails mid-body. The
+// returned counter counts the requests it actually received.
+func abortingBackend(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+
+	var hits atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				req := make([]byte, 4096)
+				_, _ = c.Read(req)
+				hits.Add(1)
+				_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\npartial"))
+			}(c)
+		}
+	}()
+	return "http://" + ln.Addr().String(), &hits
+}
+
+// TestServeHTTPReleasesInFlightSlotOnAbortedResponse pins the in-flight
+// accounting when the response copy aborts. ReverseProxy panics with
+// http.ErrAbortHandler in that case, so the slot taken by Acquire has to be
+// released on the panic path too — otherwise every aborted GET/HEAD/OPTIONS
+// inflates the counter for the process lifetime and permanently skews
+// least-connections selection.
+func TestServeHTTPReleasesInFlightSlotOnAbortedResponse(t *testing.T) {
+	backendURL, hits := abortingBackend(t)
+	b, err := balancer.NewBackend(backendURL)
+	require.NoError(t, err)
+	pool := balancer.NewPool([]*balancer.Backend{b})
+
+	// A real server, not a recorder: ReverseProxy only raises the
+	// ErrAbortHandler panic for requests that came through net/http's server,
+	// which is also what recovers it in production.
+	lb := httptest.NewServer(NewServer(pool))
+	defer lb.Close()
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		before := hits.Load()
+
+		conn, err := net.Dial("tcp", lb.Listener.Addr().String())
+		require.NoError(t, err)
+		_, err = fmt.Fprintf(conn, "%s / HTTP/1.1\r\nHost: lb\r\nContent-Length: 0\r\n\r\n", method)
+		require.NoError(t, err)
+		// The aborted copy leaves no complete response, so the load balancer
+		// drops the connection. Reading until EOF also means the handler has
+		// finished unwinding.
+		_, _ = io.Copy(io.Discard, conn)
+		require.NoError(t, conn.Close())
+
+		require.Eventually(t, func() bool { return hits.Load() > before },
+			time.Second, 10*time.Millisecond,
+			"the aborted %s must have reached the backend for this test to mean anything", method)
+		assert.Eventually(t, func() bool { return b.Active() == 0 },
+			time.Second, 10*time.Millisecond,
+			"aborted %s must not leave an in-flight slot behind", method)
+	}
+	assert.Zero(t, b.Active())
+}
+
 func TestServeHTTPCircuitBreakerSkipsFailingBackend(t *testing.T) {
 	// Backend A is dead: every routing attempt ends in a dial error that
 	// feeds its circuit breaker (threshold 1 → opens on the first failure).

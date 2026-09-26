@@ -147,12 +147,8 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	start := time.Now()
-	s.observeBackend(backend)
-	backend.Acquire()
-	defer backend.Release()
-
 	tw := newTrackingWriter(w)
-	backend.Proxy.ServeHTTP(tw, r)
+	s.serveOn(backend, tw, r)
 	elapsed := time.Since(start)
 
 	if tw.err == nil {
@@ -192,11 +188,7 @@ func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
 		}
 		served = backend.URL.Host
 
-		s.observeBackend(backend)
-		backend.Acquire()
-		tw.reset()
-		backend.Proxy.ServeHTTP(tw, r)
-		backend.Release()
+		s.serveOn(backend, tw, r)
 
 		if tw.err == nil {
 			backend.ReportSuccess()
@@ -221,6 +213,22 @@ func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
 	status := balancer.StatusCodeForError(lastErr)
 	writeStatus(w, status)
 	s.logAccess(r, status, time.Since(start), served)
+}
+
+// serveOn proxies r to backend through tw, holding one in-flight slot on that
+// backend for the duration. The release is deferred on purpose: when the
+// response copy fails mid-body — a client that hangs up, an upstream that
+// resets the connection — ReverseProxy panics with http.ErrAbortHandler and
+// unwinds through here, and the slot must be given back all the same.
+// httptest aside, only the real server recovers that panic, so the leak would
+// otherwise be invisible in unit tests and permanent in production.
+func (s *Server) serveOn(backend *balancer.Backend, tw *trackingWriter, r *http.Request) {
+	s.observeBackend(backend)
+	backend.Acquire()
+	defer backend.Release()
+
+	tw.reset()
+	backend.Proxy.ServeHTTP(tw, r)
 }
 
 func (s *Server) observeBackend(b *balancer.Backend) {
