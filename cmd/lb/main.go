@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -117,21 +117,17 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	go func() {
-		<-ctx.Done()
-		logger.Info("shutting down")
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("shutdown failed", "error", err)
-		}
-	}()
-
 	logger.Info("listening", "addr", cfg.ListenAddr)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	if err != nil {
+		logger.Error("listen failed", "addr", cfg.ListenAddr, "error", err)
+		os.Exit(1)
+	}
+
+	if err := serveUntilShutdown(ctx, ln, httpServer, logger); err != nil {
 		logger.Error("server error", "error", err)
 		os.Exit(1)
 	}
+	transport.CloseIdleConnections()
 }
