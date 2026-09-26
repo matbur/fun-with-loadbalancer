@@ -31,6 +31,15 @@ weights: [2, 1]
 health_check_every: 10s
 health_check_timeout: 2s
 
+# How many backends one health check cycle probes at once (0 = no cap). Probes
+# run in parallel so a cycle costs about one timeout instead of
+# len(backends) * timeout — a cycle slower than health_check_every would make the
+# ticker drop ticks, and the real interval would become the cycle duration.
+# The default 16 keeps a cycle under 10s for pools up to 80 backends; raise it
+# for larger pools. The cap also bounds how much of the shared transport's
+# connection budget health checks can take from proxied traffic.
+health_check_parallelism: 16
+
 # Per-backend circuit breaker (transport errors only, not backend HTTP codes).
 breaker_threshold: 3   # consecutive transport errors that open the circuit; >= 1
 breaker_cooldown: 5s   # how long the circuit stays open before a retry

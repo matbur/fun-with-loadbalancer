@@ -4,7 +4,7 @@ Scope: whole project (all non-test and test Go sources, `README.md`, `examples/l
 Baseline: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` all pass.
 Findings below were reproduced with throwaway tests (since removed).
 
-Status: **1–4, 7–9 — fixed** (see the resolution note under each finding). 5, 6 open.
+Status: **1–5, 7–9 — fixed** (see the resolution note under each finding). 6 open.
 
 ---
 
@@ -294,6 +294,44 @@ ticks while a cycle is in progress. With the defaults (10s interval, 2s timeout)
 time out push detection of the *last* backend in the list well past 30s, and the configured
 `-health-check-every` is no longer the real interval. Bounded parallelism per cycle would keep the
 interval meaningful; at minimum this deserves a note in the README next to the flag.
+
+### Resolution
+
+Fixed with bounded parallel probes, exposed as a flag rather than a hidden constant — finding 7
+faulted this project for hardcoding a limit, and a probe bound has the same character.
+
+Measured first, to fix the numbers: with 8 hanging backends and a 200ms timeout, one cycle cost
+**1.612s** (8 × timeout, exactly) and peak concurrent probes was **1 of 8**. After the change the
+same cycle costs **203ms** with 8 in flight.
+
+- `internal/health/checker.go`: `checkAll` fans out with a semaphore, collecting results into a
+  `[]bool` and applying them with `update` only after `wg.Wait()`. Applying after the fan-out keeps
+  one cycle's state transitions from interleaving with the next, and the per-index writes are race
+  free since distinct slice elements are distinct locations.
+- The permit is acquired in the loop *before* starting the goroutine, so at most `parallelism`
+  goroutines exist at all. A `select` inside the goroutine would have parked one goroutine per
+  backend instead — correct, but it would not actually bound anything.
+- New `WithParallelism(n)`; `n == 0` means uncapped, and the effective bound is
+  `min(parallelism, len(backends))` so an empty pool builds a zero-capacity channel that is never
+  used. Default `16`.
+- `internal/config` + `cmd/lb/main.go`: `-health-check-parallelism`, file key
+  `health_check_parallelism`, negative-value validation, and the value in the startup log.
+- Tests: `TestCheckerCycleCostDoesNotScaleWithPoolSize` (ceiling of 4× timeout, so it fails against
+  the sequential 8× timeout), `TestCheckerProbesConcurrentlyUpToParallelism`,
+  `TestCheckerParallelismZeroProbesEverythingAtOnce`,
+  `TestCheckerParallelismAbovePoolSizeIsHarmless`, and `TestCheckerAppliesResultsPerBackend` — the
+  last one guards the fan-out's real risk, a result landing on the wrong backend, by mixing one
+  answering backend with hanging neighbours over `failureThreshold` cycles. Three of these fail
+  against the previous code. Plus three `config` tests and a new case in
+  `TestParseFlagsOverrideConfigFileAllFields`.
+- Docs: a paragraph in the health checker section, the key in `examples/lb.yaml`, the key in both
+  README reference blocks. The default is stated with its headroom — `16` keeps a cycle under the
+  default 10s interval for pools up to 80 backends — so the bound reads as a number someone chose
+  rather than a mystery.
+
+Not addressed, and still true: the transport is shared with proxy traffic, so health checks draw
+from the same `MaxConnsPerHost: 100`. The bound caps that draw at `parallelism` connections per
+cycle instead of an unbounded wave, which is the part that was fixable here.
 
 ---
 

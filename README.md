@@ -75,6 +75,8 @@ Stan smooth WRR (`current`) mieszka **na backendzie**, więc usunięcie/dodanie 
 
 Health checker iteruje aktualną listę: nowe backendy są sprawdzane od następnego cyklu, a stan checka usuniętego backendu jest czyszczony (`prune`), więc ponownie dodany zaczyna od zera.
 
+Jeden cykl sprawdza backendy **równolegle**, ograniczone do `-health-check-parallelism` (domyślnie `16`, `0` = bez limitu). Bez tego cykl kosztował `len(backends) × health_check_timeout` — zmierzone 1.6s dla 8 wiszących backendów przy timeoutie 200ms. Ponieważ `time.Ticker` gubi tyki, gdy cykl trwa, to po przekroczeniu interwału efektywny interwał stawał się czasem cyklu, a ostatni backend z listy nie był sprawdzany, dopóki wszystkie wcześniejsze nie przekroczyły timeoutu. Domyślne `16` utrzymuje cykl poniżej 10s dla pul do 80 backendów; `MaxConnsPerHost: 100` wspólnego transportu i tak ograniczałoby falę, ale zjadłoby budżet połączeń ruchu proxowanego — dlatego limit jest jawny i konfigurowalny (`TestCheckerCycleCostDoesNotScaleWithPoolSize`).
+
 ### Endpoint `/backends`
 
 `cmd/lb` wystawia admin endpoint (bez autoryzacji — do użytku lokalnego/developerskiego):
@@ -142,7 +144,7 @@ Oba limity dotyczą wyłącznie ruchu proxowanego — endpointy `/metrics`, `/ba
 
 ### Timeouty serwera HTTP
 
-`-read-timeout` i `-write-timeout` (plik: `read_timeout` / `write_timeout`) domyślnie wynoszą `0`, czyli **brak deadline**. To celowe: powyższe limity są rozmiarowe, nie czasowe — body ogranicza `-max-body-bytes`, a nie zegar. Bezpiecznej wartości nie ma; każdy deadline krótszy niż czas wgrania `-max-body-bytes` odtwarza problem, a ten czas zależy od klienta. Wcześniej serwer miał zakodowane `ReadTimeout: 5s` obejmujące cały request razem z body, więc klient zsyłający `1 MiB` wolniej niż ~1.7 Mbit/s dostawał urwany request zamiast obiecanego `413` (regresja: `TestSlowUploadIsNotTruncatedByDefault`).
+`-read-timeout` i `-write-timeout` (plik: `read_timeout` / `write_timeout`) domyślnie wynoszą `0`, czyli **brak deadline**. To celowe: powyższe limity są rozmiarowe, nie czasowe — body ogranicza `-max-body-bytes`, a nie zegar. Bezpiecznej wartości nie ma; każdy deadline krótszy niż czas wgrania `-max-body-bytes` odtwarza problem, a ten czas zależy od klienta. Wcześniej serwer miał zakodowane `ReadTimeout: 5s` obejmujące cały request razem z body, więc klient zsyłający `1 MiB` wolniej niż ~1.7 Mbit/s dostawał urwany request zamiast obiecanego `413` (regresja: `TestSlowUploadIsNotTruncatedByDefault`). Jedyny domyślny limit czasowy to nagłówki (`ReadHeaderTimeout: 5s`) — żaden klient nie zablokuje procesu samym niekończącym się ciałem.
 
 Ustawienie `-read-timeout` przywraca ucinanie transferu, ale błąd odczytu jest wtedy rozpoznawany jako **błąd klienta** (poprzednia sekcja), więc klient dostaje `408`, a obwód backendu zostaje zamknięty (`TestSlowUploadCutOffByReadTimeoutKeepsTheCircuit`). Traktuj tę flagę jako „ile długo klient może wypełniać ciało zanim zostanie odcięty”, nie jako ochronę przed slowloris. Od slowloris i wiszących keep-alive chronią niezależne, zakodowane na stałe `ReadHeaderTimeout: 5s` oraz `IdleTimeout: 60s` — nie da się ich ustawić, bo ograniczają życie połączenia, a nie semantykę pojedynczego requestu.
 
@@ -232,6 +234,7 @@ algorithm: weighted-round-robin   # round-robin | weighted-round-robin | least-c
 weights: [2, 1]
 health_check_every: 10s
 health_check_timeout: 2s
+health_check_parallelism: 16      # ile backendów jeden cykl sprawdza naraz; 0 = bez limitu
 breaker_threshold: 3              # kolejne błędy transportu otwierające obwód
 breaker_cooldown: 5s              # czas otwarcia obwodu przed próbą
 log_format: text                  # text | json

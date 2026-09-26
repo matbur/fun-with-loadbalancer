@@ -329,6 +329,41 @@ func TestParseConfigFileServerTimeouts(t *testing.T) {
 	assert.Equal(t, 90*time.Second, cfg.WriteTimeout)
 }
 
+// TestParseHealthCheckParallelism pins the default and why it is bounded: a
+// cycle must stay under -health-check-every for the configured interval to be
+// the real one, and with the default 10s/2s a bound of 16 covers 80 backends.
+// Review finding 5.
+func TestParseHealthCheckParallelism(t *testing.T) {
+	cfg, err := Parse([]string{"-backends", "http://127.0.0.1:1"})
+	require.NoError(t, err)
+	assert.Equal(t, 16, cfg.HealthCheckParallelism)
+
+	cfg, err = Parse([]string{
+		"-backends", "http://127.0.0.1:1",
+		"-health-check-parallelism", "4",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 4, cfg.HealthCheckParallelism)
+
+	cfg, err = Parse([]string{
+		"-backends", "http://127.0.0.1:1",
+		"-health-check-parallelism", "0",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, cfg.HealthCheckParallelism, "0 = no cap")
+
+	_, err = Parse([]string{"-backends", "http://127.0.0.1:1", "-health-check-parallelism", "-1"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "health-check-parallelism")
+}
+
+func TestParseConfigFileHealthCheckParallelism(t *testing.T) {
+	path := writeConfigFile(t, "lb.yaml", "health_check_parallelism: 32\nbackends: [http://localhost:9001]\n")
+	cfg, err := Parse([]string{"-config", path})
+	require.NoError(t, err)
+	assert.Equal(t, 32, cfg.HealthCheckParallelism)
+}
+
 // TestParseFlagsOverrideConfigFileAllFields asserts the documented precedence
 // for every configurable field: an explicitly set flag wins over the config
 // file value. Each subtest sets one field via a flag while the same field is
@@ -440,6 +475,13 @@ func TestParseFlagsOverrideConfigFileAllFields(t *testing.T) {
 			flagArgs:  []string{"-write-timeout", "1s"},
 			get:       func(c Config) any { return c.WriteTimeout },
 			flagValue: time.Second,
+		},
+		{
+			name:      "health_check_parallelism",
+			fileYAML:  "health_check_parallelism: 9\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-health-check-parallelism", "2"},
+			get:       func(c Config) any { return c.HealthCheckParallelism },
+			flagValue: 2,
 		},
 	}
 

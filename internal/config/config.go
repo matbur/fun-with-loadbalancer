@@ -17,6 +17,9 @@ type Config struct {
 	Backends           []string
 	HealthCheckEvery   time.Duration
 	HealthCheckTimeout time.Duration
+	// HealthCheckParallelism caps how many backends one health check cycle
+	// probes at once (0 = no cap).
+	HealthCheckParallelism int
 
 	// Algorithm is one of round-robin, weighted-round-robin,
 	// least-connections (validated here; cmd/lb maps it to balancer).
@@ -49,20 +52,21 @@ type Config struct {
 // contents can be merged with flags and defaults. Durations are strings
 // (e.g. "5s") parsed with time.ParseDuration.
 type fileConfig struct {
-	ListenAddr         *string  `json:"listen" yaml:"listen"`
-	Backends           []string `json:"backends" yaml:"backends"`
-	HealthCheckEvery   *string  `json:"health_check_every" yaml:"health_check_every"`
-	HealthCheckTimeout *string  `json:"health_check_timeout" yaml:"health_check_timeout"`
-	Algorithm          *string  `json:"algorithm" yaml:"algorithm"`
-	Weights            []int    `json:"weights" yaml:"weights"`
-	BreakerThreshold   *int     `json:"breaker_threshold" yaml:"breaker_threshold"`
-	BreakerCooldown    *string  `json:"breaker_cooldown" yaml:"breaker_cooldown"`
-	LogFormat          *string  `json:"log_format" yaml:"log_format"`
-	LogLevel           *string  `json:"log_level" yaml:"log_level"`
-	MaxBodyBytes       *int64   `json:"max_body_bytes" yaml:"max_body_bytes"`
-	MaxConcurrent      *int     `json:"max_concurrent" yaml:"max_concurrent"`
-	ReadTimeout        *string  `json:"read_timeout" yaml:"read_timeout"`
-	WriteTimeout       *string  `json:"write_timeout" yaml:"write_timeout"`
+	ListenAddr             *string  `json:"listen" yaml:"listen"`
+	Backends               []string `json:"backends" yaml:"backends"`
+	HealthCheckEvery       *string  `json:"health_check_every" yaml:"health_check_every"`
+	HealthCheckTimeout     *string  `json:"health_check_timeout" yaml:"health_check_timeout"`
+	HealthCheckParallelism *int     `json:"health_check_parallelism" yaml:"health_check_parallelism"`
+	Algorithm              *string  `json:"algorithm" yaml:"algorithm"`
+	Weights                []int    `json:"weights" yaml:"weights"`
+	BreakerThreshold       *int     `json:"breaker_threshold" yaml:"breaker_threshold"`
+	BreakerCooldown        *string  `json:"breaker_cooldown" yaml:"breaker_cooldown"`
+	LogFormat              *string  `json:"log_format" yaml:"log_format"`
+	LogLevel               *string  `json:"log_level" yaml:"log_level"`
+	MaxBodyBytes           *int64   `json:"max_body_bytes" yaml:"max_body_bytes"`
+	MaxConcurrent          *int     `json:"max_concurrent" yaml:"max_concurrent"`
+	ReadTimeout            *string  `json:"read_timeout" yaml:"read_timeout"`
+	WriteTimeout           *string  `json:"write_timeout" yaml:"write_timeout"`
 }
 
 func Parse(args []string) (Config, error) {
@@ -73,6 +77,7 @@ func Parse(args []string) (Config, error) {
 	var backendsStr string
 	var healthCheckEvery time.Duration
 	var healthCheckTimeout time.Duration
+	var healthCheckParallelism int
 	var algorithm string
 	var weightsStr string
 	var breakerThreshold int
@@ -89,6 +94,7 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&backendsStr, "backends", "", "comma-separated backend URLs")
 	fs.DurationVar(&healthCheckEvery, "health-check-every", 10*time.Second, "health check interval")
 	fs.DurationVar(&healthCheckTimeout, "health-check-timeout", 2*time.Second, "health check per-backend timeout")
+	fs.IntVar(&healthCheckParallelism, "health-check-parallelism", 16, "how many backends one health check cycle probes at once (0 = no cap); a cycle slower than -health-check-every makes the effective interval the cycle duration")
 	fs.StringVar(&algorithm, "algorithm", "round-robin", "selection algorithm: round-robin | weighted-round-robin | least-connections")
 	fs.StringVar(&weightsStr, "weights", "", "comma-separated backend weights (must match -backends count)")
 	fs.IntVar(&breakerThreshold, "breaker-threshold", 3, "consecutive transport failures before a backend's circuit opens")
@@ -138,6 +144,7 @@ func Parse(args []string) (Config, error) {
 		if healthCheckTimeout, err = overlayDuration(set, "health-check-timeout", healthCheckTimeout, fc.HealthCheckTimeout); err != nil {
 			return Config{}, err
 		}
+		healthCheckParallelism = overlay(set, "health-check-parallelism", healthCheckParallelism, fc.HealthCheckParallelism)
 		if breakerCooldown, err = overlayDuration(set, "breaker-cooldown", breakerCooldown, fc.BreakerCooldown); err != nil {
 			return Config{}, err
 		}
@@ -155,20 +162,21 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:         listen,
-		Backends:           backends,
-		HealthCheckEvery:   healthCheckEvery,
-		HealthCheckTimeout: healthCheckTimeout,
-		Algorithm:          algorithm,
-		Weights:            weights,
-		BreakerThreshold:   breakerThreshold,
-		BreakerCooldown:    breakerCooldown,
-		LogFormat:          logFormat,
-		LogLevel:           logLevel,
-		MaxBodyBytes:       maxBodyBytes,
-		MaxConcurrent:      maxConcurrent,
-		ReadTimeout:        readTimeout,
-		WriteTimeout:       writeTimeout,
+		ListenAddr:             listen,
+		Backends:               backends,
+		HealthCheckEvery:       healthCheckEvery,
+		HealthCheckTimeout:     healthCheckTimeout,
+		HealthCheckParallelism: healthCheckParallelism,
+		Algorithm:              algorithm,
+		Weights:                weights,
+		BreakerThreshold:       breakerThreshold,
+		BreakerCooldown:        breakerCooldown,
+		LogFormat:              logFormat,
+		LogLevel:               logLevel,
+		MaxBodyBytes:           maxBodyBytes,
+		MaxConcurrent:          maxConcurrent,
+		ReadTimeout:            readTimeout,
+		WriteTimeout:           writeTimeout,
 	}
 
 	if cfg.ListenAddr == "" {
@@ -198,6 +206,9 @@ func Parse(args []string) (Config, error) {
 	case "debug", "info", "warn", "error":
 	default:
 		return Config{}, fmt.Errorf("unknown log level %q (allowed: debug, info, warn, error)", cfg.LogLevel)
+	}
+	if cfg.HealthCheckParallelism < 0 {
+		return Config{}, fmt.Errorf("health-check-parallelism must not be negative")
 	}
 	if cfg.MaxBodyBytes < 0 {
 		return Config{}, fmt.Errorf("max-body-bytes must not be negative")

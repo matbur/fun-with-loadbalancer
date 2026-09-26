@@ -14,6 +14,11 @@ import (
 const (
 	defaultInterval = 10 * time.Second
 	defaultTimeout  = 2 * time.Second
+	// defaultParallelism is how many backends one cycle probes at once. Any
+	// value works; this one keeps a cycle near a single timeout for pool sizes
+	// well past what a demo needs, without letting a large pool open a
+	// connection per backend every interval.
+	defaultParallelism = 16
 
 	failureThreshold = 3
 	successThreshold = 2
@@ -24,6 +29,8 @@ type Checker struct {
 	client   *http.Client
 	interval time.Duration
 	timeout  time.Duration
+	// parallelism caps how many probes one cycle runs at once (0 = all).
+	parallelism int
 
 	mu    sync.Mutex
 	state map[*balancer.Backend]*backendState
@@ -38,11 +45,12 @@ type Option func(*Checker)
 
 func New(pool *balancer.Pool, opts ...Option) *Checker {
 	c := &Checker{
-		pool:     pool,
-		client:   &http.Client{},
-		interval: defaultInterval,
-		timeout:  defaultTimeout,
-		state:    make(map[*balancer.Backend]*backendState),
+		pool:        pool,
+		client:      &http.Client{},
+		interval:    defaultInterval,
+		timeout:     defaultTimeout,
+		parallelism: defaultParallelism,
+		state:       make(map[*balancer.Backend]*backendState),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -56,6 +64,14 @@ func WithInterval(d time.Duration) Option {
 
 func WithTimeout(d time.Duration) Option {
 	return func(c *Checker) { c.timeout = d }
+}
+
+// WithParallelism caps how many backends one cycle probes at once. 0 means no
+// cap. The cap is what keeps -health-check-every the real interval: a cycle that
+// takes longer than the interval makes the ticker drop ticks, so the effective
+// interval becomes the cycle duration. See checkAll.
+func WithParallelism(n int) Option {
+	return func(c *Checker) { c.parallelism = max(n, 0) }
 }
 
 func WithTransport(rt http.RoundTripper) Option {
@@ -78,12 +94,49 @@ func (c *Checker) Run(ctx context.Context) {
 	}
 }
 
+// checkAll probes every backend once, several at a time, then applies the
+// results.
+//
+// The fan-out is what keeps the configured interval meaningful. Probing one
+// backend at a time costs up to len(backends) * timeout, and a time.Ticker drops
+// ticks while a cycle is in progress — so once the cycle outlasts the interval
+// the effective interval becomes the cycle duration, and the last backend in the
+// list is not even looked at until every earlier one has timed out. Probing
+// concurrently brings a cycle back to roughly one timeout, bounded by
+// parallelism so a large pool does not open a connection per backend at once.
+//
+// Results are applied after the fan-out rather than as each probe returns, so
+// the state transitions of one cycle do not interleave with the next.
 func (c *Checker) checkAll(ctx context.Context) {
 	backends := c.pool.Backends()
-	for _, b := range backends {
-		c.update(b, c.checkBackend(ctx, b))
+	results := make([]bool, len(backends))
+
+	// Acquire the permit before starting the goroutine, so at most parallelism
+	// probes exist at a time instead of one goroutine per backend.
+	sem := make(chan struct{}, c.limit(len(backends)))
+	var wg sync.WaitGroup
+	for i, b := range backends {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			results[i] = c.checkBackend(ctx, b)
+		})
+	}
+	wg.Wait()
+
+	for i, b := range backends {
+		c.update(b, results[i])
 	}
 	c.prune(backends)
+}
+
+// limit returns the effective probe bound for a pool of n backends: the
+// configured parallelism, or n when it is uncapped.
+func (c *Checker) limit(n int) int {
+	if c.parallelism == 0 {
+		return n
+	}
+	return min(c.parallelism, n)
 }
 
 // prune drops health state for backends that are no longer in the pool, so a

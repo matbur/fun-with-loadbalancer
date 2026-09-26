@@ -85,6 +85,7 @@ func main() {
 		"backends", len(cfg.Backends),
 		"health_check_every", cfg.HealthCheckEvery,
 		"health_check_timeout", cfg.HealthCheckTimeout,
+		"health_check_parallelism", cfg.HealthCheckParallelism,
 		"breaker_threshold", cfg.BreakerThreshold,
 		"breaker_cooldown", cfg.BreakerCooldown,
 		"read_timeout", cfg.ReadTimeout,
@@ -114,6 +115,7 @@ func main() {
 		pool,
 		health.WithInterval(cfg.HealthCheckEvery),
 		health.WithTimeout(cfg.HealthCheckTimeout),
+		health.WithParallelism(cfg.HealthCheckParallelism),
 		health.WithTransport(transport),
 	)
 	go checker.Run(ctx)
