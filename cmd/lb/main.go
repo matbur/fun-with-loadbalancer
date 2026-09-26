@@ -43,6 +43,29 @@ func backendOptions(cfg config.Config, transport *http.Transport, weight int) []
 	}
 }
 
+// newHTTPServer builds the HTTP server from config.
+//
+// ReadTimeout and WriteTimeout default to 0, i.e. no deadline, because the
+// request limits this LB documents are size-based: a body is bounded by
+// -max-body-bytes, not by a clock. A whole-request deadline shorter than the
+// time a client needs to send -max-body-bytes pre-empts the documented 413, and
+// the resulting error is charged to the backend as a transport failure — see
+// finding 7.
+//
+// ReadHeaderTimeout and IdleTimeout stay hardcoded: they bound connection
+// lifetime (slowloris, idle keep-alive) and cannot contradict documented request
+// semantics the way a whole-request deadline can.
+func newHTTPServer(cfg config.Config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           handler,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
@@ -64,6 +87,8 @@ func main() {
 		"health_check_timeout", cfg.HealthCheckTimeout,
 		"breaker_threshold", cfg.BreakerThreshold,
 		"breaker_cooldown", cfg.BreakerCooldown,
+		"read_timeout", cfg.ReadTimeout,
+		"write_timeout", cfg.WriteTimeout,
 	)
 
 	backends := make([]*balancer.Backend, 0, len(cfg.Backends))
@@ -101,14 +126,7 @@ func main() {
 		proxy.WithMaxBodyBytes(cfg.MaxBodyBytes),
 		proxy.WithMaxConcurrent(cfg.MaxConcurrent))))
 
-	httpServer := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           mux,
-		ReadTimeout:       5 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	httpServer := newHTTPServer(cfg, mux)
 
 	logger.Info("listening", "addr", cfg.ListenAddr)
 

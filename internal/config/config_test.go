@@ -289,6 +289,46 @@ func TestParseFlagsOverrideConfigLimits(t *testing.T) {
 	assert.Equal(t, int64(1024), cfg.MaxBodyBytes)
 }
 
+// TestParseServerTimeoutDefaults pins why the defaults are 0 and not some
+// small number: a whole-request deadline shorter than it takes to upload
+// -max-body-bytes pre-empts the documented 413 and the error is charged to the
+// backend as a transport failure. Review finding 7.
+func TestParseServerTimeoutDefaults(t *testing.T) {
+	cfg, err := Parse([]string{"-backends", "http://127.0.0.1:1"})
+	require.NoError(t, err)
+	assert.Zero(t, cfg.ReadTimeout, "no deadline by default; -max-body-bytes bounds the body")
+	assert.Zero(t, cfg.WriteTimeout, "no deadline by default; long responses must not be truncated")
+}
+
+func TestParseServerTimeoutFlags(t *testing.T) {
+	cfg, err := Parse([]string{
+		"-backends", "http://127.0.0.1:1",
+		"-read-timeout", "45s",
+		"-write-timeout", "2m",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 45*time.Second, cfg.ReadTimeout)
+	assert.Equal(t, 2*time.Minute, cfg.WriteTimeout)
+}
+
+func TestParseNegativeServerTimeoutsRejected(t *testing.T) {
+	_, err := Parse([]string{"-backends", "http://127.0.0.1:1", "-read-timeout", "-1s"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "read-timeout")
+
+	_, err = Parse([]string{"-backends", "http://127.0.0.1:1", "-write-timeout", "-1s"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "write-timeout")
+}
+
+func TestParseConfigFileServerTimeouts(t *testing.T) {
+	path := writeConfigFile(t, "lb.yaml", "read_timeout: 20s\nwrite_timeout: 90s\nbackends: [http://localhost:9001]\n")
+	cfg, err := Parse([]string{"-config", path})
+	require.NoError(t, err)
+	assert.Equal(t, 20*time.Second, cfg.ReadTimeout)
+	assert.Equal(t, 90*time.Second, cfg.WriteTimeout)
+}
+
 // TestParseFlagsOverrideConfigFileAllFields asserts the documented precedence
 // for every configurable field: an explicitly set flag wins over the config
 // file value. Each subtest sets one field via a flag while the same field is
@@ -386,6 +426,20 @@ func TestParseFlagsOverrideConfigFileAllFields(t *testing.T) {
 			flagArgs:  []string{"-max-concurrent", "2"},
 			get:       func(c Config) any { return c.MaxConcurrent },
 			flagValue: 2,
+		},
+		{
+			name:      "read_timeout",
+			fileYAML:  "read_timeout: 9s\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-read-timeout", "1s"},
+			get:       func(c Config) any { return c.ReadTimeout },
+			flagValue: time.Second,
+		},
+		{
+			name:      "write_timeout",
+			fileYAML:  "write_timeout: 9s\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-write-timeout", "1s"},
+			get:       func(c Config) any { return c.WriteTimeout },
+			flagValue: time.Second,
 		},
 	}
 

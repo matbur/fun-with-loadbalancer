@@ -123,13 +123,15 @@ func StatusCodeForError(err error) int {
 	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		return http.StatusRequestEntityTooLarge
 	}
-	if isTimeout(err) {
+	if IsTimeout(err) {
 		return http.StatusGatewayTimeout
 	}
 	return http.StatusBadGateway
 }
 
-func isTimeout(err error) bool {
+// IsTimeout reports whether err is a deadline expiry, from either the context
+// or the network layer.
+func IsTimeout(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}

@@ -69,6 +69,12 @@ func NewServer(pool *balancer.Pool, opts ...Option) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Tracked unconditionally, before any size limit: a failed body read is the
+	// client's fault whatever -max-body-bytes says, and the server has to be
+	// able to tell that apart from a backend that broke.
+	body := &trackingBody{body: r.Body}
+	r.Body = body
+
 	if s.maxBodyBytes > 0 && !s.limitRequestBody(w, r) {
 		return
 	}
@@ -82,10 +88,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isRetryable(r.Method) {
-		s.serveWithRetry(w, r)
+		s.serveWithRetry(w, r, body)
 		return
 	}
-	s.serveDirect(w, r)
+	s.serveDirect(w, r, body)
 }
 
 // limitRequestBody rejects requests whose declared Content-Length already
@@ -122,6 +128,24 @@ func isBodyTooLarge(err error) bool {
 	return errors.As(err, &maxBytesErr)
 }
 
+// clientStatusFor returns the status to answer a client-caused failure with, or
+// 0 when the failure is the backend's and should be counted as one. Two cases
+// qualify: a body over the limit, and a body that never arrived — the client
+// hung up, or a -read-timeout deadline expired mid-transfer. Neither is the
+// backend's fault, so neither may be retried or reported to the breaker.
+func clientStatusFor(err error, body *trackingBody) int {
+	switch {
+	case isBodyTooLarge(err):
+		return http.StatusRequestEntityTooLarge
+	case body.readErr == nil:
+		return 0
+	case balancer.IsTimeout(body.readErr):
+		return http.StatusRequestTimeout
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 // writeStatus writes a plain HTTP error response like http.Error does, but
 // with the nosniff header the proxy sets on every error it generates itself.
 func writeStatus(w http.ResponseWriter, status int) {
@@ -138,7 +162,7 @@ func isRetryable(method string) bool {
 	}
 }
 
-func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
+func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request, body *trackingBody) {
 	backend := s.pool.Next()
 	if backend == nil {
 		http.Error(w, "no healthy backends", http.StatusServiceUnavailable)
@@ -156,10 +180,10 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 		s.logAccess(r, tw.status, elapsed, backend.URL.Host)
 		return
 	}
-	if isBodyTooLarge(tw.err) {
-		// Client-caused: not a backend failure, no breaker trip.
-		writeStatus(w, http.StatusRequestEntityTooLarge)
-		s.logAccess(r, http.StatusRequestEntityTooLarge, elapsed, backend.URL.Host)
+	if status := clientStatusFor(tw.err, body); status != 0 {
+		// Client-caused: not a backend failure, no breaker trip, no retry.
+		writeStatus(w, status)
+		s.logAccess(r, status, elapsed, backend.URL.Host)
 		return
 	}
 	backend.ReportFailure()
@@ -173,7 +197,7 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request) {
 	s.logAccess(r, status, elapsed, backend.URL.Host)
 }
 
-func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
+func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request, body *trackingBody) {
 	tw := newTrackingWriter(w)
 	var lastErr error
 	var served string
@@ -195,10 +219,10 @@ func (s *Server) serveWithRetry(w http.ResponseWriter, r *http.Request) {
 			s.logAccess(r, tw.status, time.Since(start), served)
 			return
 		}
-		if isBodyTooLarge(tw.err) {
+		if status := clientStatusFor(tw.err, body); status != 0 {
 			// Client-caused: no retry, no breaker trip.
-			writeStatus(w, http.StatusRequestEntityTooLarge)
-			s.logAccess(r, http.StatusRequestEntityTooLarge, time.Since(start), served)
+			writeStatus(w, status)
+			s.logAccess(r, status, time.Since(start), served)
 			return
 		}
 		backend.ReportFailure()

@@ -42,3 +42,15 @@ log_level: info        # debug | info | warn | error
 # Request limits (proxied traffic only; admin/metrics/health endpoints are exempt).
 max_body_bytes: 1048576 # max request body size in bytes; 0 = unlimited
 max_concurrent: 0       # max concurrent in-flight requests; 0 = unlimited
+
+# HTTP server deadlines. Both default to 0, i.e. no deadline — the request
+# limits above are size-based, and a body is bounded by max_body_bytes rather
+# than by a clock. Read the body at your own risk: a client slow enough to hit
+# read_timeout is cut off mid-transfer, and the resulting error is charged to
+# the backend as a transport failure.
+#
+# Header and keep-alive lifetimes are not configurable: read_header_timeout is
+# 5s and idle_timeout is 60s, which bound connection lifetime without touching
+# request semantics.
+read_timeout: 0s        # max duration for reading a whole request incl. body; 0 = no limit
+write_timeout: 0s       # max duration for writing a response; 0 = no limit

@@ -4,7 +4,7 @@ Scope: whole project (all non-test and test Go sources, `README.md`, `examples/l
 Baseline: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` all pass.
 Findings below were reproduced with throwaway tests (since removed).
 
-Status: **1–4 — fixed** (see the resolution note under each finding). 5–8 open.
+Status: **1–4, 7, 9 — fixed** (see the resolution note under each finding). 5, 6, 8 open.
 
 ---
 
@@ -326,6 +326,33 @@ Both are hardcoded while every other limit is a flag; consider exposing them (or
 coupling, since `README.md` presents body/concurrency limits as the way oversized traffic is
 handled).
 
+### Resolution
+
+Fixed. The first bullet is much worse than "a truncated request" — it is a **breaker trip**, now
+recorded as finding 9 below. The root cause is the same: `ReadTimeout` bounds the whole request
+including the body, and `-max-body-bytes` bounds it by size.
+
+- `cmd/lb/main.go`: server construction extracted into `newHTTPServer(cfg, handler)`. `ReadTimeout`
+  and `WriteTimeout` now come from config; `ReadHeaderTimeout: 5s` and `IdleTimeout: 60s` stay
+  hardcoded (they bound connection lifetime and cannot contradict request semantics).
+- `internal/config/config.go`: new `ReadTimeout`/`WriteTimeout` fields, `-read-timeout` /
+  `-write-timeout` flags, `read_timeout` / `write_timeout` file keys, negative-value validation.
+- **Defaults are `0`, not a larger number.** There is no safe value: any whole-request deadline
+  shorter than the time to upload `-max-body-bytes` re-creates the bug, and that time depends on the
+  client. The documented limits are size-based, so no deadline is the only default consistent with
+  them. `ReadHeaderTimeout` still covers slowloris.
+- The second bullet resolves itself once the deadline is the operator's choice; `ResponseHeaderTimeout:
+  5s` already bounds the "backend does not answer" case, so the 30s body-truncation of long
+  downloads and the shared retry budget are gone by default.
+- `probeTimeout`'s comment in `internal/balancer/circuit_breaker.go` leaned on the 30s `WriteTimeout`
+  as its upper bound. That anchor is gone, so the comment now says 30s is a judgement call and
+  states the consequence of raising `-write-timeout` past it.
+- Tests: `TestSlowUploadIsNotTruncatedByDefault` (6s upload, fails against the old hardcoded 5s),
+  `TestServerTimeoutsDefaultToNoDeadline`, four `config` tests, plus two new cases in
+  `TestParseFlagsOverrideConfigFileAllFields`.
+- `README.md` + `examples/lb.yaml`: new "Timeouty serwera HTTP" section, the flags in both
+  reference blocks, and a note on the `probeTimeout` coupling.
+
 ---
 
 ## 8. [Doc] `README.md` contradicts itself about the request limits
@@ -338,6 +365,72 @@ handled).
 Both limits are implemented (`internal/proxy/proxy.go:46-61`, `46-102`), have flags, are described
 in the "Limity" section (`README.md:125-130`), and appear in `examples/lb.yaml`. Only this
 limitations bullet is stale; it should be deleted or rewritten.
+
+---
+
+## 9. [High] A client-side body read failure is charged to the backend, opening its circuit
+
+Found while fixing finding 7; independent of the timeout values and still reachable after that
+fix, because the error path does not care *why* the read failed.
+
+`internal/proxy/proxy.go` distinguishes one client-caused error — `*http.MaxBytesError` from
+`http.MaxBytesReader` maps to `413`, is not retried, and does not touch the breaker
+(`isBodyTooLarge`, `StatusCodeForError`). Every other error from the upstream round trip is treated
+as backend transport failure: `ReportFailure` on the backend and `502` to the client. A read
+failure on `r.Body` is in the second group but belongs in the first — the backend did nothing wrong.
+
+Reproduced with the production mux in front of a healthy backend, one request whose declared
+`Content-Length: 1000` arrives over 6s, and a short `ReadTimeout` (the pre-fix hardcoded 5s):
+
+```
+client status: 502 Bad Gateway
+backend hits: 1
+pool.Ready(): false      <- the circuit opened
+```
+
+`ReverseProxy` copies `r.Body` to the backend, the copy fails, and `serveDirect` reports the failure
+against the backend. A client that trickles bytes within its declared length can therefore take a
+backend out of rotation, and since the LB is only ready while some backend is routable
+(`Pool.Ready()`), one such client per backend makes `/ready` return `503` and the LB fail its
+orchestrator probe. That is a client-caused failure escalating into a load-balancer outage.
+
+Fixing it means recording whether the failure happened while reading `r.Body` — wrap the body and
+remember the read error, then treat it like `isBodyTooLarge`: no retry, no breaker trip. Which status
+to return is a design choice (`400` vs `408 Request Timeout`; the body never completed arriving, so
+`408` is arguably the honest one). Left open deliberately: it is a separate fix from finding 7, with
+its own question about the status code.
+
+### Resolution
+
+Fixed.
+
+- New `internal/proxy/tracking_body.go`: `trackingBody` wraps `r.Body` and keeps the first non-EOF
+  read error. `EOF` is excluded because a body that ends is how requests normally finish.
+- `ServeHTTP` installs it **unconditionally, before `limitRequestBody`**, so the classification works
+  without `-max-body-bytes` too — the old failure mode did not need a body limit to trigger. The
+  `MaxBytesReader` sits on top, so an over-limit body still surfaces as `*http.MaxBytesError` and
+  `readErr` stays nil: the two client-caused cases stay cleanly separated.
+- New `clientStatusFor(err, body)` replaces the two duplicated `isBodyTooLarge` branches with one
+  decision point: `413` for over-limit, `408` for a read that timed out, `400` for any other failed
+  read, and `0` (backend's fault) when nothing was recorded on the body. Timeout gets its own status
+  so a client can tell "you were too slow" from "your request was malformed".
+- `clientStatusFor` is checked in both `serveDirect` and `serveWithRetry`, so the no-retry rule covers
+  both. A retry could not succeed anyway — the body is already gone from the client connection — and
+  it would have charged the backend for the second failure too.
+- `balancer.isTimeout` exported as `IsTimeout` rather than duplicated in `proxy`; it is the same
+  predicate `StatusCodeForError` already uses.
+- Ordering is sound rather than lucky: `copyRequest` reads and writes in one loop and returns the
+  first error, so a recorded `readErr` is the error `ReverseProxy` reports, and a backend write
+  failure always leaves `readErr` nil.
+- Tests: `internal/proxy/body_read_test.go` — `TestServeHTTPBodyReadFailureDoesNotTripBreaker`,
+  `...BodyReadTimeoutReturns408`, `TestServeHTTPRetriesAreNotSpentOnAFailedBody`,
+  `TestServeHTTPEOFIsNotAReadFailure`, and `TestServeHTTPBackendFailureStillTripsBreaker` (so the new
+  branch cannot swallow real failures). `cmd/lb/timeouts_test.go` —
+  `TestSlowUploadCutOffByReadTimeoutKeepsTheCircuit`, the end-to-end version through a real server
+  with a real `-read-timeout`: the client gets `408` and the next upload is served.
+- Attempts are counted through `metrics.BackendRequests`, not by counting hits on the test backend.
+  Counting hits was flaky (0 or 1): when the body read fails, the transport sometimes tears the
+  connection down before the backend handler runs.
 
 ---
 

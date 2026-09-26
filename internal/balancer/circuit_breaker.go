@@ -25,8 +25,14 @@ const (
 // probe normally gives it up by reporting, but an aborted response makes
 // ReverseProxy panic out of ServeHTTP, so neither reportSuccess nor
 // reportFailure runs and the next request would be turned away until restart.
-// Must exceed the longest legitimate request, which the proxy caps at the
-// server's WriteTimeout (30s).
+//
+// 30s is a judgement call rather than a derived bound: -write-timeout no longer
+// caps the slowest legitimate request, so nothing above proves this is larger
+// than a request may legitimately take. Raising -write-timeout past 30s means
+// this should be raised with it, or a slow-but-healthy backend can have its
+// probe cut off. Backend.ReportHealthy recovers such a backend sooner, but only
+// if it still answers /healthz — which is what is in doubt when the circuit
+// opened.
 const probeTimeout = 30 * time.Second
 
 // circuitBreaker protects a backend against bursts of transport-level

@@ -33,8 +33,15 @@ type Config struct {
 
 	// MaxBodyBytes limits the request body size in bytes (0 = unlimited);
 	// MaxConcurrent caps the number of in-flight requests (0 = unlimited).
-	MaxBodyBytes int64
+	MaxBodyBytes  int64
 	MaxConcurrent int
+
+	// ReadTimeout bounds the whole request read, body included, and
+	// WriteTimeout bounds writing the response. Both 0 mean no deadline, which
+	// is the default: the documented request limits are size-based, not
+	// time-based, and a body is bounded by MaxBodyBytes rather than by a clock.
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
 }
 
 // fileConfig mirrors Config for YAML/JSON files. Pointers and nil slices
@@ -54,6 +61,8 @@ type fileConfig struct {
 	LogLevel           *string  `json:"log_level" yaml:"log_level"`
 	MaxBodyBytes       *int64   `json:"max_body_bytes" yaml:"max_body_bytes"`
 	MaxConcurrent      *int     `json:"max_concurrent" yaml:"max_concurrent"`
+	ReadTimeout        *string  `json:"read_timeout" yaml:"read_timeout"`
+	WriteTimeout       *string  `json:"write_timeout" yaml:"write_timeout"`
 }
 
 func Parse(args []string) (Config, error) {
@@ -72,6 +81,8 @@ func Parse(args []string) (Config, error) {
 	var logLevel string
 	var maxBodyBytes int64
 	var maxConcurrent int
+	var readTimeout time.Duration
+	var writeTimeout time.Duration
 
 	fs.StringVar(&cfgFile, "config", "", "path to a YAML/JSON config file; explicitly set flags override file values")
 	fs.StringVar(&listen, "listen", ":8080", "address to listen on")
@@ -86,6 +97,8 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.Int64Var(&maxBodyBytes, "max-body-bytes", 1<<20, "max request body size in bytes (0 = unlimited)")
 	fs.IntVar(&maxConcurrent, "max-concurrent", 0, "max concurrent in-flight requests (0 = unlimited)")
+	fs.DurationVar(&readTimeout, "read-timeout", 0, "max duration for reading a whole request incl. body (0 = no limit; the body is bounded by -max-body-bytes)")
+	fs.DurationVar(&writeTimeout, "write-timeout", 0, "max duration for writing a response (0 = no limit)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -132,6 +145,13 @@ func Parse(args []string) (Config, error) {
 		logLevel = overlay(set, "log-level", logLevel, fc.LogLevel)
 		maxBodyBytes = overlay(set, "max-body-bytes", maxBodyBytes, fc.MaxBodyBytes)
 		maxConcurrent = overlay(set, "max-concurrent", maxConcurrent, fc.MaxConcurrent)
+
+		if readTimeout, err = overlayDuration(set, "read-timeout", readTimeout, fc.ReadTimeout); err != nil {
+			return Config{}, err
+		}
+		if writeTimeout, err = overlayDuration(set, "write-timeout", writeTimeout, fc.WriteTimeout); err != nil {
+			return Config{}, err
+		}
 	}
 
 	cfg := Config{
@@ -147,6 +167,8 @@ func Parse(args []string) (Config, error) {
 		LogLevel:           logLevel,
 		MaxBodyBytes:       maxBodyBytes,
 		MaxConcurrent:      maxConcurrent,
+		ReadTimeout:        readTimeout,
+		WriteTimeout:       writeTimeout,
 	}
 
 	if cfg.ListenAddr == "" {
@@ -182,6 +204,12 @@ func Parse(args []string) (Config, error) {
 	}
 	if cfg.MaxConcurrent < 0 {
 		return Config{}, fmt.Errorf("max-concurrent must not be negative")
+	}
+	if cfg.ReadTimeout < 0 {
+		return Config{}, fmt.Errorf("read-timeout must not be negative")
+	}
+	if cfg.WriteTimeout < 0 {
+		return Config{}, fmt.Errorf("write-timeout must not be negative")
 	}
 
 	return cfg, nil

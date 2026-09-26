@@ -13,7 +13,7 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 - **Brak retry dla metod nieidempotentnych** (`POST`, `PUT`, `PATCH`) — retry tylko dla `GET`/`HEAD`/`OPTIONS`, `maxAttempts = 2`, kolejna próba omija padający backend.
 - **Konfiguracja przez flagi lub plik YAML/JSON** (`-config`; flagi nadpisują plik) — lista backendów, adres listen, algorytm, wagi, breaker, logowanie, interwały health checka.
 - **Structured logging** (`log/slog`) — format `text`/`json` i poziom wybierane flagami; access log per request (method, path, status, duration, backend), odpowiedzi ≥500 jako warn; bez loggera proxy milczy.
-- **Limity** — max rozmiar body requestu (`-max-body-bytes`, domyślnie 1 MiB) i max równoległych requestów (`-max-concurrent`); przekroczenie body → `413`, brak miejsca → `503`.
+- **Limity** — max rozmiar body requestu (`-max-body-bytes`, domyślnie 1 MiB) i max równoległych requestów (`-max-concurrent`); przekroczenie body → `413`, brak miejsca → `503`. Timeouty serwera (`-read-timeout`, `-write-timeout`) domyślnie `0` — limity są rozmiarowe, nie czasowe.
 - **Graceful shutdown po `SIGTERM`/`SIGINT`** — dokończenie trwających requestów, zatrzymanie health checker'a.
 
 ## Błędy i retry
@@ -23,7 +23,14 @@ Mały, poprawny HTTP reverse round-robin load balancer.
 - timeout backendu (dial/TLS/nagłówki) → `504 Gateway Timeout`,
 - błędy upstreamu zwracane przez backend (np. `500`) są przekazywane wprost do klienta bez retry.
 
-Retry dotyczy wyłącznie metod idempotentnych (`GET`, `HEAD`, `OPTIONS`): maksymalnie 2 próby, wykonywane tylko gdy błąd nastąpił przed wysłaniem jakichkolwiek bajtów do klienta (odpowiedź jest streamowana, bez buforowania w pamięci). Metody z efektami ubocznymi (`POST`, `PUT`, `PATCH`) nigdy nie są ponawiane, aby nie duplikować skutków.
+Błędy **po stronie klienta** rozróżniane są osobno i nigdy nie są zliczane jako błąd backendu — nie otwierają obwodu, nie wyzwalają retry i nie trafiają do `lb_backend_errors_total`:
+
+- body większe niż `-max-body-bytes` → `413 Request Entity Too Large`,
+- body, które nie dotarło w całości (klient się rozłączył, wygasł `-read-timeout`) → `400 Bad Request`, a przy wygasłym terminie `408 Request Timeout`.
+
+Rozróżnienie jest możliwe, bo proxy owija `r.Body` i zapamiętuje błąd odczytu (`trackingBody`). Bez tego `ReverseProxy` zgłasza niedokończone body i zerwane połączenie z backendem tym samym kodem co awarię backendu — a klient, który zrezygnował z wgrywania pliku, potrafił wyjechać obwód zdrowego backendu i wyłączyć cały load balancer (`TestServeHTTPBodyReadFailureDoesNotTripBreaker`).
+
+Retry dotyczy wyłącznie metod idempotentnych (`GET`, `HEAD`, `OPTIONS`): maksymalnie 2 próby, wykonywane tylko gdy błąd nastąpił przed wysłaniem jakichkolwiek bajtów do klienta (odpowiedź jest streamowana, bez buforowania w pamięci). Metody z efektami ubocznymi (`POST`, `PUT`, `PATCH`) nigdy nie są ponawiane, aby nie duplikować skutków. Błędu klienta nie ponawia się w ogóle — body i tak jest już zużyte.
 
 Przed serią błędów transportu chroni dodatkowo circuit breaker — szczegóły w sekcji niżej.
 
@@ -133,6 +140,14 @@ Access log pochodzi z proxy przez opcję `WithLogger` — bez niej (np. w testac
 
 Oba limity dotyczą wyłącznie ruchu proxowanego — endpointy `/metrics`, `/backends`, `/live`, `/ready` im nie podlegają.
 
+### Timeouty serwera HTTP
+
+`-read-timeout` i `-write-timeout` (plik: `read_timeout` / `write_timeout`) domyślnie wynoszą `0`, czyli **brak deadline**. To celowe: powyższe limity są rozmiarowe, nie czasowe — body ogranicza `-max-body-bytes`, a nie zegar. Bezpiecznej wartości nie ma; każdy deadline krótszy niż czas wgrania `-max-body-bytes` odtwarza problem, a ten czas zależy od klienta. Wcześniej serwer miał zakodowane `ReadTimeout: 5s` obejmujące cały request razem z body, więc klient zsyłający `1 MiB` wolniej niż ~1.7 Mbit/s dostawał urwany request zamiast obiecanego `413` (regresja: `TestSlowUploadIsNotTruncatedByDefault`).
+
+Ustawienie `-read-timeout` przywraca ucinanie transferu, ale błąd odczytu jest wtedy rozpoznawany jako **błąd klienta** (poprzednia sekcja), więc klient dostaje `408`, a obwód backendu zostaje zamknięty (`TestSlowUploadCutOffByReadTimeoutKeepsTheCircuit`). Traktuj tę flagę jako „ile długo klient może wypełniać ciało zanim zostanie odcięty”, nie jako ochronę przed slowloris. Od slowloris i wiszących keep-alive chronią niezależne, zakodowane na stałe `ReadHeaderTimeout: 5s` oraz `IdleTimeout: 60s` — nie da się ich ustawić, bo ograniczają życie połączenia, a nie semantykę pojedynczego requestu.
+
+`-write-timeout` domyślnie `0`, więc długie odpowiedzi (long-polling, duże pobrania) nie są ucinane. Nagłówki od backendu i tak są ograniczone przez transport (`ResponseHeaderTimeout: 5s`), więc ścieżka „backend nie odpowiada” jest chroniona niezależnie. Jeśli ustawisz `-write-timeout` powyżej 30s, podnieś też `probeTimeout` w `internal/balancer/circuit_breaker.go` — wartość jest dobrana heurystycznie, bo nic wyżej już jej nie wyprowadza.
+
 ## Zakres
 
 W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, testy.
@@ -177,6 +192,8 @@ go run ./cmd/lb \
   -log-level info                   # debug | info | warn | error
   -max-body-bytes 1048576           # max body requestu w bajtach; 0 = bez limitu
   -max-concurrent 0                 # max równoległych requestów; 0 = bez limitu
+  -read-timeout 0                   # max czasu na cały request (0 = bez limitu)
+  -write-timeout 0                  # max czasu na odpowiedź (0 = bez limitu)
 ```
 
 Przykład z wagami i least-connections:
@@ -221,6 +238,8 @@ log_format: text                  # text | json
 log_level: info                   # debug | info | warn | error
 max_body_bytes: 1048576           # max body requestu w bajtach; 0 = bez limitu
 max_concurrent: 0                 # max równoległych requestów; 0 = bez limitu
+read_timeout: 0s                  # max czasu na cały request (0 = bez limitu)
+write_timeout: 0s                 # max czasu na odpowiedź (0 = bez limitu)
 ```
 
 `lb.json` (odpowiednik, bez komentarzy — JSON ich nie wspiera):
@@ -235,7 +254,9 @@ max_concurrent: 0                 # max równoległych requestów; 0 = bez limit
   "log_format": "json",
   "log_level": "debug",
   "max_body_bytes": 1048576,
-  "max_concurrent": 0
+  "max_concurrent": 0,
+  "read_timeout": "0s",
+  "write_timeout": "0s"
 }
 ```
 
