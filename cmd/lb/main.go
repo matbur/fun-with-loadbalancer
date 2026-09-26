@@ -95,18 +95,11 @@ func main() {
 
 	admin := newAdminAPI(pool, transport, cfg.BreakerThreshold, cfg.BreakerCooldown)
 
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", m.Handler())
-	mux.Handle("/", m.Wrap(proxy.NewServer(pool,
+	mux := newMux(pool, admin, m, m.Wrap(proxy.NewServer(pool,
 		proxy.WithMetrics(m),
 		proxy.WithLogger(logger),
 		proxy.WithMaxBodyBytes(cfg.MaxBodyBytes),
 		proxy.WithMaxConcurrent(cfg.MaxConcurrent))))
-	mux.HandleFunc("GET /backends", admin.list)
-	mux.HandleFunc("POST /backends", admin.add)
-	mux.HandleFunc("DELETE /backends", admin.remove)
-	mux.HandleFunc("GET /live", handleLive)
-	mux.HandleFunc("GET /ready", handleReady(pool))
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

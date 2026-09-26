@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"fun-with-loadbalancer/internal/balancer"
+	"fun-with-loadbalancer/internal/metrics"
 )
 
 func newHealthzServer(t *testing.T) (*httptest.Server, *balancer.Pool) {
@@ -19,11 +20,9 @@ func newHealthzServer(t *testing.T) (*httptest.Server, *balancer.Pool) {
 	require.NoError(t, err)
 	pool := balancer.NewPool([]*balancer.Backend{b})
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /live", handleLive)
-	mux.HandleFunc("GET /ready", handleReady(pool))
-
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(newMux(pool,
+		newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second),
+		metrics.New(), notProxied(t)))
 	t.Cleanup(srv.Close)
 	return srv, pool
 }
@@ -62,9 +61,9 @@ func TestReadyReturns503WhenCircuitOpen(t *testing.T) {
 	b.ReportFailure() // opens the circuit (threshold 1)
 
 	pool := balancer.NewPool([]*balancer.Backend{b})
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /ready", handleReady(pool))
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(newMux(pool,
+		newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second),
+		metrics.New(), notProxied(t)))
 	t.Cleanup(srv.Close)
 
 	assert.Equal(t, http.StatusServiceUnavailable, getStatus(t, srv.URL+"/ready"))
@@ -73,13 +72,16 @@ func TestReadyReturns503WhenCircuitOpen(t *testing.T) {
 func TestHealthzWrongMethodNotAllowed(t *testing.T) {
 	srv, _ := newHealthzServer(t)
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/live", nil)
-	require.NoError(t, err)
+	for _, path := range []string{"/live", "/ready"} {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+path, nil)
+		require.NoError(t, err)
 
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	resp.Body.Close()
-	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode, "POST %s", path)
+		assert.Equal(t, "GET, HEAD", resp.Header.Get("Allow"), "POST %s", path)
+	}
 }
 
 func TestReadyDoesNotTripBreaker(t *testing.T) {
@@ -93,9 +95,9 @@ func TestReadyDoesNotTripBreaker(t *testing.T) {
 	b.ReportFailure() // open the circuit
 
 	pool := balancer.NewPool([]*balancer.Backend{b})
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /ready", handleReady(pool))
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(newMux(pool,
+		newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second),
+		metrics.New(), notProxied(t)))
 	t.Cleanup(srv.Close)
 
 	// After the cooldown elapses, /ready must still report 503 — the circuit

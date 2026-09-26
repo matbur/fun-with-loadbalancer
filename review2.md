@@ -4,7 +4,7 @@ Scope: whole project (all non-test and test Go sources, `README.md`, `examples/l
 Baseline: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` all pass.
 Findings below were reproduced with throwaway tests (since removed).
 
-Status: **1 — fixed** (see the resolution note under the finding). 2–8 open.
+Status: **1, 2 — fixed** (see the resolution note under each finding). 3–8 open.
 
 ---
 
@@ -80,7 +80,7 @@ Still open from this finding, deliberately:
 
 ---
 
-## 2. [Low-Medium] The catch-all `/` proxy handler defeats the method-scoped admin/probe patterns — and two tests assert a `405` that never happens in production
+## 2. [Low-Medium] ✅ FIXED — The catch-all `/` proxy handler defeats the method-scoped admin/probe patterns — and two tests assert a `405` that never happens in production
 
 `cmd/lb/main.go:100-109` registers `mux.Handle("/", …)` (the proxy) alongside the method-scoped
 `GET /backends`, `POST /backends`, `DELETE /backends`, `GET /live`, `GET /ready`. In
@@ -105,9 +105,44 @@ they pass and hide the gap:
 - `cmd/lb/admin_test.go:143` `TestAdminWrongMethodNotAllowed`
 - `cmd/lb/healthz_test.go:73` `TestHealthzWrongMethodNotAllowed`
 
-Fix: build the mux in one function used by both `main()` and the tests (then the 405 assertions
-become meaningful), and/or have the `/` handler refuse the reserved prefixes
+Suggested fix: build the mux in one function used by both `main()` and the tests (then the 405
+assertions become meaningful), and/or have the `/` handler refuse the reserved prefixes
 (`/metrics`, `/backends`, `/live`, `/ready`) instead of shadowing them.
+
+### Resolution
+
+Done. The mux is now built by `newMux(pool, admin, m, proxied)` in the new `cmd/lb/routes.go`, used
+by `main()` and by the tests, so there is one routing definition.
+
+The reserved paths keep their own paths in the mux but drop the method-scoped pattern in favour of an
+explicit `methodRouter` (`routes.go:19-30`) — a `map[string]http.HandlerFunc` that dispatches on
+`r.Method` and answers `405` with a sorted `Allow` header otherwise. Registering `/backends`,
+`/live`, `/ready` per path (all methods) makes them more specific than `/`, so the catch-all can no
+longer win; the proxy stays the catch-all for everything else.
+
+Two details preserved deliberately: `HEAD` is registered next to `GET` on each path, because the
+method-scoped `"GET"` patterns it replaces also matched `HEAD`; and `/metrics` is unchanged, since it
+was already registered per path and so was never affected by this finding.
+
+Tests: `cmd/lb/routes_test.go` adds `TestReservedPathsRejectWrongMethod` (405 + `Allow` for every
+method a reserved path does not implement), `TestReservedPathsServeGet` (the happy paths still work),
+`TestProxyStillCatchAll` (including `/backends/extra` and `/live/deep`, which are not reserved and
+must still proxy) and `TestMethodRouter`. The two pre-existing 405 tests now build the production mux
+and additionally assert the `Allow` header; their shared `notProxied(t)` stand-in fails the test if
+the catch-all is ever reached, so a regression reports "was proxied to a backend" rather than a bare
+status mismatch.
+
+Verified: reverting `newMux` to the old method-scoped registration makes the new and updated tests
+fail with `418` (proxy reached) instead of `405`. `go build ./...`, `go vet ./...`, `go test ./...`,
+`go test -race ./...`, `go test -count=20 ./cmd/lb/` all pass.
+
+One thing the new test caught while being written: `DELETE /backends` and `POST /backends` *are*
+implemented methods, so they legitimately reach `admin.remove`/`admin.add` (and 400 on an empty body)
+— only `PUT`/`PATCH` are wrong-method cases for that path.
+
+Still open, deliberately: `/backends` remains unauthenticated, so a wrong method on a *correct* path
+(`POST /backends` with junk) is still reachable by anyone who can reach the port. That is the
+documented local/dev tradeoff, not part of this finding.
 
 ---
 

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"fun-with-loadbalancer/internal/balancer"
+	"fun-with-loadbalancer/internal/metrics"
 )
 
 func newTestAdmin(t *testing.T) (*adminAPI, *httptest.Server, *balancer.Pool) {
@@ -22,12 +23,10 @@ func newTestAdmin(t *testing.T) (*adminAPI, *httptest.Server, *balancer.Pool) {
 	pool := balancer.NewPool([]*balancer.Backend{b})
 	admin := newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /backends", admin.list)
-	mux.HandleFunc("POST /backends", admin.add)
-	mux.HandleFunc("DELETE /backends", admin.remove)
-
-	srv := httptest.NewServer(mux)
+	// The production mux, so the routing under test is the routing that ships:
+	// a method mismatch on a reserved path must be rejected here, not handed to
+	// the catch-all proxy.
+	srv := httptest.NewServer(newMux(pool, admin, metrics.New(), notProxied(t)))
 	t.Cleanup(srv.Close)
 	return admin, srv, pool
 }
@@ -149,5 +148,6 @@ func TestAdminWrongMethodNotAllowed(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	resp.Body.Close()
-	require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	assert.Equal(t, "DELETE, GET, HEAD, POST", resp.Header.Get("Allow"))
 }
