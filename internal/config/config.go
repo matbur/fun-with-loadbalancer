@@ -110,7 +110,7 @@ func Parse(args []string) (Config, error) {
 
 		listen = overlay(set, "listen", listen, fc.ListenAddr)
 		algorithm = overlay(set, "algorithm", algorithm, fc.Algorithm)
-		breakerThreshold = overlay(set, "breaker_threshold", breakerThreshold, fc.BreakerThreshold)
+		breakerThreshold = overlay(set, "breaker-threshold", breakerThreshold, fc.BreakerThreshold)
 
 		if !set["backends"] && fc.Backends != nil {
 			backends = fc.Backends
@@ -119,13 +119,13 @@ func Parse(args []string) (Config, error) {
 			weights = fc.Weights
 		}
 
-		if healthCheckEvery, err = overlayDuration(set, "health_check_every", healthCheckEvery, fc.HealthCheckEvery); err != nil {
+		if healthCheckEvery, err = overlayDuration(set, "health-check-every", healthCheckEvery, fc.HealthCheckEvery); err != nil {
 			return Config{}, err
 		}
-		if healthCheckTimeout, err = overlayDuration(set, "health_check_timeout", healthCheckTimeout, fc.HealthCheckTimeout); err != nil {
+		if healthCheckTimeout, err = overlayDuration(set, "health-check-timeout", healthCheckTimeout, fc.HealthCheckTimeout); err != nil {
 			return Config{}, err
 		}
-		if breakerCooldown, err = overlayDuration(set, "breaker_cooldown", breakerCooldown, fc.BreakerCooldown); err != nil {
+		if breakerCooldown, err = overlayDuration(set, "breaker-cooldown", breakerCooldown, fc.BreakerCooldown); err != nil {
 			return Config{}, err
 		}
 		logFormat = overlay(set, "log-format", logFormat, fc.LogFormat)
@@ -189,6 +189,8 @@ func Parse(args []string) (Config, error) {
 
 // overlay returns file when the flag was not explicitly set and the file
 // defines a value; otherwise it returns the flag value (or its default).
+// flagName must be the registered flag name (e.g. "breaker-threshold") — the
+// same key fs.Visit records for explicitly set flags.
 func overlay[T any](set map[string]bool, flagName string, flagValue T, file *T) T {
 	if !set[flagName] && file != nil {
 		return *file

@@ -192,7 +192,7 @@ func TestParseConfigFileBadDuration(t *testing.T) {
 	path := writeConfigFile(t, "bad.yaml", "breaker_cooldown: banana\n")
 	_, err := Parse([]string{"-config", path})
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "breaker_cooldown")
+	assert.ErrorContains(t, err, "breaker-cooldown")
 }
 
 func TestParseConfigFileBadAlgorithm(t *testing.T) {
@@ -287,4 +287,115 @@ func TestParseFlagsOverrideConfigLimits(t *testing.T) {
 	cfg, err := Parse([]string{"-config", path, "-max-body-bytes", "1024"})
 	require.NoError(t, err)
 	assert.Equal(t, int64(1024), cfg.MaxBodyBytes)
+}
+
+// TestParseFlagsOverrideConfigFileAllFields asserts the documented precedence
+// for every configurable field: an explicitly set flag wins over the config
+// file value. Each subtest sets one field via a flag while the same field is
+// also present in the file — this is the combination that used to lose the
+// flag for breaker_threshold / breaker_cooldown / health_check_every /
+// health_check_timeout.
+func TestParseFlagsOverrideConfigFileAllFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		fileYAML  string
+		flagArgs  []string
+		get       func(Config) any
+		flagValue any
+	}{
+		{
+			name:      "listen",
+			fileYAML:  "listen: \":9090\"\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-listen", ":7777"},
+			get:       func(c Config) any { return c.ListenAddr },
+			flagValue: ":7777",
+		},
+		{
+			name:      "backends",
+			fileYAML:  "backends: [http://localhost:9001, http://localhost:9002]\n",
+			flagArgs:  []string{"-backends", "http://localhost:9003"},
+			get:       func(c Config) any { return c.Backends },
+			flagValue: []string{"http://localhost:9003"},
+		},
+		{
+			name:      "health_check_every",
+			fileYAML:  "health_check_every: 5s\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-health-check-every", "1s"},
+			get:       func(c Config) any { return c.HealthCheckEvery },
+			flagValue: time.Second,
+		},
+		{
+			name:      "health_check_timeout",
+			fileYAML:  "health_check_timeout: 2s\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-health-check-timeout", "500ms"},
+			get:       func(c Config) any { return c.HealthCheckTimeout },
+			flagValue: 500 * time.Millisecond,
+		},
+		{
+			name:      "algorithm",
+			fileYAML:  "algorithm: weighted-round-robin\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-algorithm", "least-connections"},
+			get:       func(c Config) any { return c.Algorithm },
+			flagValue: "least-connections",
+		},
+		{
+			name:      "weights",
+			fileYAML:  "weights: [2]\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-weights", "3"},
+			get:       func(c Config) any { return c.Weights },
+			flagValue: []int{3},
+		},
+		{
+			name:      "breaker_threshold",
+			fileYAML:  "breaker_threshold: 9\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-breaker-threshold", "1"},
+			get:       func(c Config) any { return c.BreakerThreshold },
+			flagValue: 1,
+		},
+		{
+			name:      "breaker_cooldown",
+			fileYAML:  "breaker_cooldown: 9s\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-breaker-cooldown", "1s"},
+			get:       func(c Config) any { return c.BreakerCooldown },
+			flagValue: time.Second,
+		},
+		{
+			name:      "log_format",
+			fileYAML:  "log_format: json\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-log-format", "text"},
+			get:       func(c Config) any { return c.LogFormat },
+			flagValue: "text",
+		},
+		{
+			name:      "log_level",
+			fileYAML:  "log_level: debug\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-log-level", "warn"},
+			get:       func(c Config) any { return c.LogLevel },
+			flagValue: "warn",
+		},
+		{
+			name:      "max_body_bytes",
+			fileYAML:  "max_body_bytes: 2048\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-max-body-bytes", "512"},
+			get:       func(c Config) any { return c.MaxBodyBytes },
+			flagValue: int64(512),
+		},
+		{
+			name:      "max_concurrent",
+			fileYAML:  "max_concurrent: 4\nbackends: [http://localhost:9001]\n",
+			flagArgs:  []string{"-max-concurrent", "2"},
+			get:       func(c Config) any { return c.MaxConcurrent },
+			flagValue: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, "lb.yaml", tt.fileYAML)
+			args := append([]string{"-config", path}, tt.flagArgs...)
+			cfg, err := Parse(args)
+			require.NoError(t, err)
+			assert.Equal(t, tt.flagValue, tt.get(cfg), "explicit flag must win over the file value")
+		})
+	}
 }
