@@ -68,14 +68,15 @@ func (p *Pool) Backends() []*Backend {
 	return append([]*Backend(nil), p.backends.Load().([]*Backend)...)
 }
 
-// Ready reports whether at least one backend can currently take traffic: it
-// is healthy (per the health checker) and its circuit breaker is not open.
-// It mirrors the proxy's "no healthy backends" outcome without mutating
-// state — a readiness probe never triggers the open → half-open transition
-// that a call to Available would.
+// Ready reports whether at least one backend can currently take traffic: it is
+// healthy (per the health checker) and its circuit breaker is not blocking
+// requests. That includes a circuit open past its cooldown, which Next would
+// hand out as the probe — so the readiness answer never contradicts the routing
+// decision. The read is still passive: a readiness probe does not perform the
+// open → half-open transition that a call to Available would.
 func (p *Pool) Ready() bool {
 	for _, b := range p.Backends() {
-		if b.Healthy.Load() && !b.breaker.isOpen() {
+		if b.Healthy.Load() && !b.breaker.blocks() {
 			return true
 		}
 	}

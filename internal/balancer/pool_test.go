@@ -64,6 +64,47 @@ func TestPoolReadyViaFailures(t *testing.T) {
 	assert.False(t, pool.Ready(), "an open circuit must make the pool not ready")
 }
 
+// TestPoolReadyAfterCooldown is the regression test for review finding 4: Ready
+// used a bare "is the circuit open" read, so a circuit past its cooldown
+// reported 503 while Next already handed the backend out as the probe.
+func TestPoolReadyAfterCooldown(t *testing.T) {
+	b, err := NewBackend("http://127.0.0.1:1",
+		WithBreakerThreshold(1),
+		WithBreakerCooldown(20*time.Millisecond),
+	)
+	require.NoError(t, err)
+	pool := NewPool([]*Backend{b})
+
+	b.ReportFailure()
+	assert.False(t, pool.Ready(), "inside the cooldown the circuit blocks traffic")
+
+	time.Sleep(40 * time.Millisecond)
+	assert.True(t, pool.Ready(), "past the cooldown the backend takes traffic as the probe")
+	assert.Same(t, b, pool.Next(), "and Next hands out the backend /ready just vouched for")
+}
+
+// TestPoolReadyIsPassive pins the other half: agreeing with Next must not mean
+// performing the transition. Orchestrators poll /ready every second, so it may
+// not move the breaker.
+func TestPoolReadyIsPassive(t *testing.T) {
+	b, err := NewBackend("http://127.0.0.1:1",
+		WithBreakerThreshold(1),
+		WithBreakerCooldown(20*time.Millisecond),
+	)
+	require.NoError(t, err)
+	pool := NewPool([]*Backend{b})
+
+	b.ReportFailure()
+	time.Sleep(40 * time.Millisecond)
+
+	for range 3 {
+		assert.True(t, pool.Ready())
+	}
+	assert.Equal(t, circuitOpen, circuitState(b.breaker.state.Load()),
+		"probing readiness must not transition open → half-open")
+	assert.Zero(t, b.breaker.probeAt.Load(), "nor consume the probe")
+}
+
 func TestPoolNextAllUnhealthy(t *testing.T) {
 	b := mustBackend(t, "http://127.0.0.1:1")
 	b.Healthy.Store(false)

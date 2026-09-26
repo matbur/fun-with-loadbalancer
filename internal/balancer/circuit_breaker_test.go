@@ -206,7 +206,8 @@ func TestCircuitBreakerReportHealthyRecoversOpenCircuit(t *testing.T) {
 		b.ReportFailure()
 	}
 	require.False(t, b.Available())
-	require.False(t, b.breaker.isOpen() == false, "the circuit must be open, not half-open")
+	require.Equal(t, circuitOpen, circuitState(b.breaker.state.Load()),
+		"the circuit must be open, not half-open")
 
 	b.ReportHealthy()
 	assert.Equal(t, circuitClosed, circuitState(b.breaker.state.Load()))
@@ -226,7 +227,8 @@ func TestCircuitBreakerReportHealthyLeavesClosedCircuitAlone(t *testing.T) {
 	assert.Equal(t, circuitClosed, circuitState(b.breaker.state.Load()))
 
 	b.ReportFailure() // third consecutive failure must still open the circuit
-	assert.True(t, b.breaker.isOpen(), "health checks must not reset the failure counter")
+	assert.Equal(t, circuitOpen, circuitState(b.breaker.state.Load()),
+		"health checks must not reset the failure counter")
 }
 
 // TestCircuitBreakerReportHealthyRecoversHalfOpen: the check resolves the

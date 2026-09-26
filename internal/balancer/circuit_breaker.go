@@ -63,8 +63,7 @@ func (cb *circuitBreaker) allow() bool {
 	case circuitHalfOpen:
 		return cb.claimProbe()
 	case circuitOpen:
-		now := time.Now().UnixNano()
-		if now-cb.openedAt.Load() < int64(cb.cooldown) {
+		if cb.coolingDown() {
 			return false
 		}
 		if !cb.state.CompareAndSwap(int32(circuitOpen), int32(circuitHalfOpen)) {
@@ -89,10 +88,22 @@ func (cb *circuitBreaker) claimProbe() bool {
 	return cb.probeAt.CompareAndSwap(held, now)
 }
 
-// isOpen reports whether the circuit is currently open. Unlike allow it is a
-// passive read: it never performs the open → half-open transition.
-func (cb *circuitBreaker) isOpen() bool {
-	return circuitState(cb.state.Load()) == circuitOpen
+// coolingDown reports whether the cooldown window that started when the circuit
+// was last opened has not elapsed yet.
+//
+// Despite the name this is a pure clock comparison: it returns true for a closed
+// circuit that tripped recently — ReportHealthy closes the circuit without
+// waiting out the cooldown — so callers must check the state themselves.
+func (cb *circuitBreaker) coolingDown() bool {
+	return time.Now().UnixNano()-cb.openedAt.Load() < int64(cb.cooldown)
+}
+
+// blocks reports whether the circuit is refusing traffic right now: open and
+// still inside its cooldown. Past its cooldown it does not block, because the
+// next request would be admitted as the probe. The read stays passive — it never
+// performs the open → half-open transition itself.
+func (cb *circuitBreaker) blocks() bool {
+	return circuitState(cb.state.Load()) == circuitOpen && cb.coolingDown()
 }
 
 // reportFailure feeds a transport error into the breaker. In closed state it

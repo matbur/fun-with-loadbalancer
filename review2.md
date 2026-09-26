@@ -4,7 +4,7 @@ Scope: whole project (all non-test and test Go sources, `README.md`, `examples/l
 Baseline: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` all pass.
 Findings below were reproduced with throwaway tests (since removed).
 
-Status: **1, 2, 3 — fixed. 4 — partially fixed** (see the resolution note under each finding). 5–8 open.
+Status: **1–4 — fixed** (see the resolution note under each finding). 5–8 open.
 
 ---
 
@@ -209,12 +209,13 @@ bounded, cannot misroute or produce spurious 503s, and is strictly an improvemen
 behaviour. The default round-robin scan returns the first candidate it admits and is unaffected.
 Finding 4 narrows the window further: the health checker now closes a stuck circuit on its own.
 
-Still open, deliberately: findings 4 and 6 both concern the same passive-vs-active asymmetry from
-the other side (`/ready` reads `isOpen()`, the proxy reads `allow()`), and are not addressed here.
+Still open, deliberately: finding 6 concerns the same passive-vs-active asymmetry from the other side
+(`/ready` reports per-backend state that the proxy already accounts for, but the metrics labels are
+unbounded), and is not addressed here.
 
 ---
 
-## 4. [Low] ⚠️ PARTIALLY FIXED — `/ready` can report `503` at moments when the proxy would still route traffic
+## 4. [Low] ✅ FIXED — `/ready` can report `503` at moments when the proxy would still route traffic
 
 `Pool.Ready()` (`pool.go:76-83`) uses `breaker.isOpen()`, a passive read, while the proxy path
 uses `Available()` → `allow()`, which performs the lazy open → half-open transition once the
@@ -239,36 +240,49 @@ elapsed" as ready, or let a successful `/healthz` close the circuit.
 
 ### Resolution
 
-The second of the two suggested options was taken, by request: **a healthy `/healthz` now closes the
-circuit** (`Backend.ReportHealthy` → `circuitBreaker.recover()`), called from
-`internal/health/checker.go` `update` on the *same* hysteresis that sets `Healthy` (2 consecutive
-successes), so the health flag and the breaker cannot disagree.
+Both suggested options were taken; together they close the finding completely.
 
-This removes the part of the finding that was a real outage. Before, an idle LB's only route back
-was a half-open probe, which requires traffic, so the circuit stayed open and `/ready` stayed `503`
-for backends that were answering perfectly. Now recovery is driven out of band, and `/ready` returns
-to `200` within at most two checker cycles instead of never.
+**1. A healthy `/healthz` closes the circuit** (`Backend.ReportHealthy` → `circuitBreaker.recover()`),
+called from `internal/health/checker.go` `update` on the *same* hysteresis that sets `Healthy` (2
+consecutive successes), so the health flag and the breaker cannot disagree. This removes the part of
+the finding that was a real outage: an idle LB's only route back used to be a half-open probe, which
+requires traffic, so the circuit stayed open and `/ready` stayed `503` for backends that were
+answering perfectly. Recovery is now out of band, and `/ready` returns to `200` within at most two
+checker cycles instead of never.
 
 `recover()` is a no-op in `circuitClosed`, and that restriction is the point: the failure counter
 measures request handling, so a health check that cleared it on every cycle would mean a backend
 failing one request in five never reached `threshold` and the breaker never fired. Only an actually
 open (or half-open) circuit is recovered, and the failure counter is reset only in that case.
 
-`TestCheckerRecoversOpenCircuit` (health, cooldown set to an hour so only the checker can recover)
-fails against the previous checker and passes now. `TestCheckerDoesNotResetFailureCounter` pins the
-no-op-in-closed half: a successful check landing *between* two failures must not stop the third from
-opening the circuit. In `internal/balancer`, `TestCircuitBreakerReportHealthyRecoversOpenCircuit`,
-`...LeavesClosedCircuitAlone` and `...RecoversHalfOpen` cover the breaker transitions directly,
-including a stalled probe whose late verdict must not re-open a circuit the health check closed.
+**2. `Pool.Ready()` now accounts for the cooldown.** `circuitBreaker.isOpen()` is gone, replaced by
+`blocks()`: `open && coolingDown()`. The cooldown rule itself moved into `coolingDown()` and is now
+stated in exactly one place, which is the point — the finding existed because two readers spelled out
+the same rule differently and drifted. `Ready()` still never performs the `open → half-open`
+transition; it only reports that the next request *would* be admitted as the probe, so the readiness
+answer no longer contradicts the routing decision.
 
-**What is still open.** The two readings still disagree *at a given instant*, which is the other half
-of this finding: `Pool.Ready()` calls `isOpen()`, so between the moment the cooldown elapses and the
-next successful health check, `/ready` still says `503` while `Next()` would hand out that backend.
-That window is now bounded by the checker interval (≤2 cycles by default) instead of being unbounded,
-which is why this is marked partially rather than fully fixed. Closing it completely would mean
-`Ready()` treating "open but cooldown elapsed" as ready, which `TestReadyDoesNotTripBreaker`
-(`cmd/lb/healthz_test.go:85`) currently forbids — changing that is a separate decision about what
-`/ready` is meant to mean, not a bug fix.
+**What this costs.** After the cooldown elapses, `/ready` returns `200` on a backend that is still
+broken, and the first request the orchestrator sends is the probe — so it gets a `502`/`504` rather
+than a `503` from a "ready" pod. That is the correct direction: readiness saying "no" while routing
+says "yes" is the failure mode, and one failed probe is the breaker working, not a regression.
+
+Tests: `TestCheckerRecoversOpenCircuit` (health, cooldown an hour so only the checker can recover)
+and `TestCircuitBreakerReportHealthyRecoversOpenCircuit` / `...LeavesClosedCircuitAlone` /
+`...RecoversHalfOpen` (balancer) cover the recovery half.
+`TestPoolReadyAfterCooldown` and `TestPoolReadyIsPassive` cover the cooldown half, the latter
+white-box because the passivity invariant is not observable from `cmd/lb` — `/backends` exposes no
+breaker state. `TestCheckerDoesNotResetFailureCounter` pins that a health check landing *between* two
+failures does not stop the third from opening the circuit. All of the new ones fail against the
+previous code.
+
+`cmd/lb/healthz_test.go` needed renaming, because the old test asserted the bug:
+`TestReadyDoesNotTripBreaker` required `503` *after* the cooldown had elapsed, with the comment "the
+circuit is still open because nothing transitioned it" — that is precisely the disagreement this
+finding is about. It is now `TestReadyReturns200AfterCooldown`, and the passivity half it was named
+after lives in `internal/balancer` as `TestPoolReadyIsPassive`. `TestReadyReturns503WhenCircuitOpen`
+became `TestReadyReturns503InsideCooldown`, since with the new semantics the distinction that matters
+is inside vs past the cooldown (it uses a one-hour cooldown).
 
 ---
 

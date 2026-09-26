@@ -52,7 +52,7 @@ func TestReadyReturns503WhenBackendUnhealthy(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, getStatus(t, srv.URL+"/ready"))
 }
 
-func TestReadyReturns503WhenCircuitOpen(t *testing.T) {
+func TestReadyReturns503InsideCooldown(t *testing.T) {
 	b, err := balancer.NewBackend("http://127.0.0.1:9001",
 		balancer.WithBreakerThreshold(1),
 		balancer.WithBreakerCooldown(time.Hour),
@@ -84,9 +84,12 @@ func TestHealthzWrongMethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestReadyDoesNotTripBreaker(t *testing.T) {
-	// Probing /ready must be a passive read: it may not transition the
-	// breaker open → half-open (which Available/allow would do).
+// TestReadyReturns200AfterCooldown is the other half of
+// TestReadyReturns503InsideCooldown, at the HTTP level: past the cooldown the
+// backend takes traffic again as the probe, so /ready must say so instead of
+// contradicting the routing decision. Review finding 4; its passivity half is
+// pinned white-box in internal/balancer, as TestPoolReadyIsPassive.
+func TestReadyReturns200AfterCooldown(t *testing.T) {
 	b, err := balancer.NewBackend("http://127.0.0.1:9001",
 		balancer.WithBreakerThreshold(1),
 		balancer.WithBreakerCooldown(20*time.Millisecond),
@@ -100,8 +103,10 @@ func TestReadyDoesNotTripBreaker(t *testing.T) {
 		metrics.New(), notProxied(t)))
 	t.Cleanup(srv.Close)
 
-	// After the cooldown elapses, /ready must still report 503 — the circuit
-	// is still open because nothing (no real traffic) transitioned it.
+	assert.Equal(t, http.StatusServiceUnavailable, getStatus(t, srv.URL+"/ready"),
+		"inside the cooldown /ready reports 503")
+
 	time.Sleep(40 * time.Millisecond)
-	assert.Equal(t, http.StatusServiceUnavailable, getStatus(t, srv.URL+"/ready"))
+	assert.Equal(t, http.StatusOK, getStatus(t, srv.URL+"/ready"),
+		"past the cooldown the backend is the probe, so /ready reports 200")
 }

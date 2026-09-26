@@ -99,9 +99,9 @@ Parametry ustawia się per backend (`WithBreakerThreshold`, `WithBreakerCooldown
 Endpointy dla orchestratorów (np. Kubernetes liveness/readiness probes):
 
 - `GET /live` — **liveness**: `200`, dopóki proces działa; nie ma wewnętrznego stanu do sprawdzenia.
-- `GET /ready` — **readiness**: `200`, gdy co najmniej jeden backend może przyjąć ruch — jest zdrowy wg health checka *i* ma nieotwarty obwód circuit breakera; `503` w przeciwnym razie (ten sam wynik co odpowiedź proxy „no healthy backends").
+- `GET /ready` — **readiness**: `200`, gdy co najmniej jeden backend może przyjąć ruch — jest zdrowy wg health checka *i* jego obwód nie blokuje teraz ruchu; `503` w przeciwnym razie (ten sam wynik co odpowiedź proxy „no healthy backends").
 
-`/ready` to **pasywny odczyt** (`Pool.Ready()`): w przeciwieństwie do `Available()` nie powoduje przejścia open → half-open na breakerze — samo sondowanie readiness nie zmienia stanu obwodu (test `TestReadyDoesNotTripBreaker`). Powrot do `200` po tym jak obwód się otworzył przychodzi z health checkera (zdrowy `/healthz` zamyka obwód), więc `/ready` może pokazywać `503` do dwóch cykli checkera po otwarciu.
+`/ready` to **pasywny odczyt** (`Pool.Ready()`): w przeciwieństwie do `Available()` nie powoduje przejścia open → half-open na breakerze — samo sondowanie readiness nie zmienia stanu obwodu (test `TestPoolReadyIsPassive`). Odczyt uwzględnia cooldown: obwód otwarty, ale już po `cooldown`, **nie** blokuje ruchu, bo następny request zostałby przepuszczony jako próba. Dzięki temu `/ready` nigdy nie przeczy decyzji o routingu. Powrót do `200` po zamknięciu obwodu przychodzi z health checkera (zdrowy `/healthz` zamyka obwód), więc `/ready` może pokazywać `503` do dwóch cykli checkera po otwarciu.
 
 ## Logi (structured logging)
 
