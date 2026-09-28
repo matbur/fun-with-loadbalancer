@@ -161,7 +161,7 @@ Ustawienie `-read-timeout` przywraca ucinanie transferu, ale błąd odczytu jest
 
 ## Zakres
 
-W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends` + panel `/admin`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, testy.
+W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends` + panel `/admin`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, obraz kontenerowy, testy.
 
 ## Świadome ograniczenia
 
@@ -215,6 +215,48 @@ go run ./cmd/lb -backends http://localhost:9001,http://localhost:9002 \
 ```
 
 Całą konfigurację można też przenieść do pliku YAML/JSON — patrz niżej.
+
+## Docker
+
+```bash
+make docker-up                  # albo: docker compose up --build
+```
+
+Panel: <http://localhost:8080/admin>. `make docker-down` zatrzymuje stos, `make docker-build` tylko buduje obraz.
+
+`docker-compose.yml` podnosi load balancer i dwa backendy z `traefik/whoami`. whoami odpowiada na każdą ścieżkę (więc health check na `/healthz` przechodzi) i **podaje własną nazwę w ciele odpowiedzi**, więc round-robin widać w odpowiedzi, nie tylko w logu:
+
+```bash
+for i in 1 2 3 4; do curl -s http://localhost:8080/ | head -1; done
+```
+
+Obraz (`Dockerfile`) to dwustopniowy build na `gcr.io/distroless/static-debian12:nonroot` — statyczna binarka z `CGO_ENABLED=0`, bez shella i bez menedżera pakietów, ~13,5 MB. `USER nonroot` (UID 65532), `ENTRYPOINT` w formie exec, więc `SIGTERM` z `docker stop` trafia prosto do procesu i graceful shutdown zadziała. W compose kontener dodatkowo startuje z `read_only: true`, `cap_drop: ALL` i `no-new-privileges` — binarka nic nie zapisuje, więc nic na tym nie traci.
+
+W obrazie nie ma `EXPOSE`, bo port jest konfigurowalny flagą `-listen` (domyślnie `:8080`), a `EXPOSE` i tak niczego nie publikuje — do wystawienia portu służy wyłącznie `-p` w `docker run` albo `ports:` w compose.
+
+Bez compose:
+
+```bash
+docker build -t lb .
+docker run --rm -p 8080:8080 lb -backends http://backend-1:80 -listen :8080
+```
+
+Wariant wieloplatformowy (arm64 + amd64 z jednego builda) **nie działa na domyślnym driverze `docker`** — BuildKit odrzuca build bez `--push` albo jawnych `--output`, bo `docker` nie umie eksportować listy manifestów. Dwie drogi:
+
+```bash
+# A) włączyć w Docker Desktop "containerd image store" w ustawieniach, potem:
+docker buildx build --platform linux/amd64,linux/arm64 -t lb:multi --push .
+
+# B) osobny builder na driverze kontenerowym (bez zmian w ustawieniach):
+docker buildx create --name multi --driver docker-container --bootstrap
+docker buildx build --builder multi \
+  --platform linux/amd64,linux/arm64 \
+  -o type=oci,dest=lb-multi.tar .
+```
+
+Wariant B sprawdzony: `lb-multi.tar` ma manifesty dla obu architektur. Pojedynczą platformę buduje zwykły `docker build --platform`.
+
+Świadomie **bez `HEALTHCHECK`** w obrazie: distroless nie ma `wget` ani `curl`, a healthcheck i tak musiałby być osobną binarką. Są za to `/live` i `/ready`, wystarczające orkiestratorowi — w compose nie ma healthchecka z tego samego powodu.
 
 ## Konfiguracja YAML/JSON
 

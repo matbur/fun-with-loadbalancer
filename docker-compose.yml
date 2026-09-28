@@ -1,0 +1,32 @@
+# Local demo: the load balancer and two backends. whoami names itself in the
+# response body, so round-robin is visible without reading the access log.
+name: fun-with-loadbalancer
+
+services:
+  lb:
+    build: .
+    image: fun-with-loadbalancer:dev
+    command:
+      - -backends=http://backend-1:80,http://backend-2:80
+      - -listen=:8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend-1
+      - backend-2
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  backend-1:
+    image: traefik/whoami
+    command: ["--name=backend-1"]
+
+  backend-2:
+    image: traefik/whoami
+    command: ["--name=backend-2"]

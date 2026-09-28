@@ -2,7 +2,7 @@ BACKENDS ?= http://localhost:9001,http://localhost:9002
 LISTEN ?= :8080
 BACKEND_PORT ?= 9001
 
-.PHONY: help run backend test test-race test-repeat vet
+.PHONY: help run backend test test-race test-repeat vet docker-build docker-up docker-down
 
 help: ## show available targets
 	@printf "Available targets:\n"
@@ -25,3 +25,12 @@ test-repeat: ## run core tests 50 times to catch flakiness
 
 vet: ## static analysis
 	go vet ./...
+
+docker-build: ## build the load balancer image
+	docker build -t fun-with-loadbalancer:dev .
+
+docker-up: ## start the load balancer and two demo backends
+	docker compose up -d --build
+
+docker-down: ## stop the demo stack
+	docker compose down
