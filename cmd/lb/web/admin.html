@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/admin/favicon.svg" type="image/svg+xml">
 <title>Backendy — panel admina</title>
 <style>
   /* Jeden plik, zero zaleznosci zewnetrznych. */
@@ -47,7 +48,9 @@
   }
   main { max-width: 62rem; margin: 0 auto; }
 
-  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  h1 { display: flex; align-items: center; gap: .6rem;
+       font-size: 1.5rem; margin: 0 0 .25rem; }
+  h1 img { width: 1.75rem; height: 1.75rem; display: block; }
   h2 { font-size: 1rem; margin: 0; font-weight: 600; }
   .sub { margin: 0 0 1.5rem; color: var(--muted); }
 
@@ -156,7 +159,7 @@
 </head>
 <body>
 <main>
-  <h1>Backendy</h1>
+  <h1><img src="/admin/favicon.svg" alt="" width="28" height="28"> Backendy</h1>
   <p class="sub">Panel administracyjny load balancera. Zmiany działają natychmiast —
      pula jest aktualizowana w pamięci i nie wymaga restartu.</p>
 

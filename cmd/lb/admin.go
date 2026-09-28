@@ -15,14 +15,27 @@ import (
 // The panel talks to the same /backends API as curl, so it adds no server-side
 // surface, and is unauthenticated exactly like the API behind it.
 //
+// One embed directive per file, so a missing asset is a build failure rather
+// than a panic at startup — //go:embed web would accept the directory either way.
+//
 //go:embed web/admin.html
 var adminPage []byte
 
-func handleAdminUI(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(adminPage)
+//go:embed web/favicon.svg
+var faviconSVG []byte
+
+func serveAsset(page []byte, contentType string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(page)
+	}
 }
+
+var (
+	handleAdminUI = serveAsset(adminPage, "text/html; charset=utf-8")
+	handleFavicon = serveAsset(faviconSVG, "image/svg+xml")
+)
 
 // adminAPI implements the /backends endpoint for dynamic backend management:
 //

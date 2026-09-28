@@ -143,11 +143,12 @@ func TestReservedPathsRejectWrongMethod(t *testing.T) {
 	// /backends are implemented (they reach admin.remove/admin.add), so they
 	// are not candidates here.
 	wrong := map[string][]string{
-		"/backends": {http.MethodPut, http.MethodPatch},
-		"/live":     {http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
-		"/ready":    {http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
-		"/admin":    {http.MethodPost, http.MethodPut, http.MethodDelete},
-		"/admin/":   {http.MethodPost, http.MethodPut, http.MethodDelete},
+		"/backends":          {http.MethodPut, http.MethodPatch},
+		"/live":              {http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
+		"/ready":             {http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
+		"/admin":             {http.MethodPost, http.MethodPut, http.MethodDelete},
+		"/admin/":            {http.MethodPost, http.MethodPut, http.MethodDelete},
+		"/admin/favicon.svg": {http.MethodPost, http.MethodPut, http.MethodDelete},
 	}
 	for path, methods := range wrong {
 		for _, method := range methods {
@@ -177,12 +178,13 @@ func TestReservedPathsServeGet(t *testing.T) {
 	defer srv.Close()
 
 	for path, want := range map[string]int{
-		"/live":     http.StatusOK,
-		"/ready":    http.StatusOK,
-		"/backends": http.StatusOK,
-		"/metrics":  http.StatusOK,
-		"/admin":    http.StatusOK,
-		"/admin/":   http.StatusOK,
+		"/live":              http.StatusOK,
+		"/ready":             http.StatusOK,
+		"/backends":          http.StatusOK,
+		"/metrics":           http.StatusOK,
+		"/admin":             http.StatusOK,
+		"/admin/":            http.StatusOK,
+		"/admin/favicon.svg": http.StatusOK,
 	} {
 		assert.Equal(t, want, getStatus(t, srv.URL+path), "GET %s", path)
 	}

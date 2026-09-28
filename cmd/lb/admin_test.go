@@ -81,6 +81,31 @@ func TestAdminUIRejectsWrongMethod(t *testing.T) {
 	}
 }
 
+// TestAdminUIFaviconIsServed: the favicon is an SVG, not the panel page, and the
+// page points at the path that serves it.
+func TestAdminUIFaviconIsServed(t *testing.T) {
+	_, srv, _ := newTestAdmin(t)
+
+	resp, err := http.Get(srv.URL + "/admin/favicon.svg")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "image/svg+xml", resp.Header.Get("Content-Type"))
+	assert.Contains(t, string(body), "<svg")
+
+	page, err := http.Get(srv.URL + "/admin")
+	require.NoError(t, err)
+	pageBody, err := io.ReadAll(page.Body)
+	page.Body.Close()
+	require.NoError(t, err)
+	// Referenced twice: as the tab icon and next to the heading.
+	assert.Contains(t, string(pageBody), `<link rel="icon" href="/admin/favicon.svg"`)
+	assert.Contains(t, string(pageBody), `<img src="/admin/favicon.svg"`)
+}
+
 func TestAdminListsBackends(t *testing.T) {
 	_, srv, _ := newTestAdmin(t)
 

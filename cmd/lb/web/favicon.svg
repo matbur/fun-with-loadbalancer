@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="fan-out, neon green connections">
+<defs><filter id="g" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="1.05" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+<rect x="1" y="1" width="30" height="30" rx="7" fill="#0b1020" stroke="#1e293b" stroke-width="1.5"/>
+<g filter="url(#g)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+<g stroke="#39ff14" stroke-width="2.2">
+<path d="M10.5 16H15"/><path d="M15 16 21.5 7.5"/><path d="M15 16h6.5"/><path d="M15 16 21.5 24.5"/>
+</g>
+<circle cx="7.6" cy="16" r="2.9" fill="#e0e7ff" stroke="none"/>
+<g fill="#22d3ee" stroke="none">
+<circle cx="24.4" cy="7.5" r="2.4"/><circle cx="24.4" cy="16" r="2.4"/><circle cx="24.4" cy="24.5" r="2.4"/>
+</g>
+</g>
+</svg>

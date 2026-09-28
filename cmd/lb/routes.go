@@ -64,6 +64,12 @@ func newMux(pool *balancer.Pool, admin *adminAPI, m *metrics.Metrics, proxied ht
 		http.MethodGet:  handleAdminUI,
 		http.MethodHead: handleAdminUI,
 	})
+	// More specific than "/admin/", so the panel's page handler does not
+	// answer the favicon request with HTML.
+	mux.Handle("/admin/favicon.svg", methodRouter{
+		http.MethodGet:  handleFavicon,
+		http.MethodHead: handleFavicon,
+	})
 	// HEAD sits next to GET on every path because the method-scoped "GET"
 	// patterns it replaces also matched HEAD.
 	mux.Handle("/backends", methodRouter{
