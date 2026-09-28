@@ -55,6 +55,15 @@ func (r methodRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func newMux(pool *balancer.Pool, admin *adminAPI, m *metrics.Metrics, proxied http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.Handler())
+	// Both paths: "/admin" alone would let "/admin/" reach the proxy.
+	mux.Handle("/admin", methodRouter{
+		http.MethodGet:  handleAdminUI,
+		http.MethodHead: handleAdminUI,
+	})
+	mux.Handle("/admin/", methodRouter{
+		http.MethodGet:  handleAdminUI,
+		http.MethodHead: handleAdminUI,
+	})
 	// HEAD sits next to GET on every path because the method-scoped "GET"
 	// patterns it replaces also matched HEAD.
 	mux.Handle("/backends", methodRouter{

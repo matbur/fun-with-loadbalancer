@@ -180,7 +180,7 @@ func main() {
 	)
 	go checker.Run(ctx)
 
-	admin := newAdminAPI(pool, transport, cfg.BreakerThreshold, cfg.BreakerCooldown)
+	admin := newAdminAPI(pool, transport, m, cfg.BreakerThreshold, cfg.BreakerCooldown)
 
 	mux := newMux(pool, admin, m, m.Wrap(proxy.NewServer(pool,
 		proxy.WithMetrics(m),

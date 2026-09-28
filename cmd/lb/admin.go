@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,7 +9,20 @@ import (
 	"time"
 
 	"fun-with-loadbalancer/internal/balancer"
+	"fun-with-loadbalancer/internal/metrics"
 )
+
+// The panel talks to the same /backends API as curl, so it adds no server-side
+// surface, and is unauthenticated exactly like the API behind it.
+//
+//go:embed web/admin.html
+var adminPage []byte
+
+func handleAdminUI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(adminPage)
+}
 
 // adminAPI implements the /backends endpoint for dynamic backend management:
 //
@@ -20,14 +34,16 @@ import (
 type adminAPI struct {
 	pool             *balancer.Pool
 	transport        http.RoundTripper
+	metrics          *metrics.Metrics
 	breakerThreshold int
 	breakerCooldown  time.Duration
 }
 
-func newAdminAPI(pool *balancer.Pool, transport http.RoundTripper, breakerThreshold int, breakerCooldown time.Duration) *adminAPI {
+func newAdminAPI(pool *balancer.Pool, transport http.RoundTripper, m *metrics.Metrics, breakerThreshold int, breakerCooldown time.Duration) *adminAPI {
 	return &adminAPI{
 		pool:             pool,
 		transport:        transport,
+		metrics:          m,
 		breakerThreshold: breakerThreshold,
 		breakerCooldown:  breakerCooldown,
 	}
@@ -113,6 +129,10 @@ func (a *adminAPI) remove(w http.ResponseWriter, r *http.Request) {
 			if err := a.pool.RemoveBackend(b); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
+			}
+			// Series are keyed by host, so they would otherwise live forever.
+			if a.metrics != nil {
+				a.metrics.ForgetBackend(b.URL.Host)
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return

@@ -46,7 +46,7 @@ func newSlowUploadFixture(t *testing.T, srvCfg config.Config) (*httptest.Server,
 	proxied := m.Wrap(proxy.NewServer(pool,
 		proxy.WithMetrics(m),
 		proxy.WithMaxBodyBytes(1<<20)))
-	mux := newMux(pool, newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second), m, proxied)
+	mux := newMux(pool, newAdminAPI(pool, http.DefaultTransport, m, 3, 5*time.Second), m, proxied)
 
 	ts := httptest.NewUnstartedServer(nil)
 	ts.Config = newHTTPServer(srvCfg, mux)

@@ -20,10 +20,11 @@ func newHealthzServer(t *testing.T) (*httptest.Server, *balancer.Pool) {
 	b, err := balancer.NewBackend("http://127.0.0.1:9001")
 	require.NoError(t, err)
 	pool := balancer.NewPool([]*balancer.Backend{b})
+	m := metrics.New()
 
 	srv := httptest.NewServer(newMux(pool,
-		newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second),
-		metrics.New(), notProxied(t)))
+		newAdminAPI(pool, http.DefaultTransport, m, 3, 5*time.Second),
+		m, notProxied(t)))
 	t.Cleanup(srv.Close)
 	return srv, pool
 }
@@ -62,9 +63,10 @@ func TestReadyReturns503InsideCooldown(t *testing.T) {
 	b.ReportFailure() // opens the circuit (threshold 1)
 
 	pool := balancer.NewPool([]*balancer.Backend{b})
+	m := metrics.New()
 	srv := httptest.NewServer(newMux(pool,
-		newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second),
-		metrics.New(), notProxied(t)))
+		newAdminAPI(pool, http.DefaultTransport, m, 3, 5*time.Second),
+		m, notProxied(t)))
 	t.Cleanup(srv.Close)
 
 	assert.Equal(t, http.StatusServiceUnavailable, getStatus(t, srv.URL+"/ready"))
@@ -99,9 +101,10 @@ func TestReadyReturns200AfterCooldown(t *testing.T) {
 	b.ReportFailure() // open the circuit
 
 	pool := balancer.NewPool([]*balancer.Backend{b})
+	m := metrics.New()
 	srv := httptest.NewServer(newMux(pool,
-		newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second),
-		metrics.New(), notProxied(t)))
+		newAdminAPI(pool, http.DefaultTransport, m, 3, 5*time.Second),
+		m, notProxied(t)))
 	t.Cleanup(srv.Close)
 
 	assert.Equal(t, http.StatusServiceUnavailable, getStatus(t, srv.URL+"/ready"),
@@ -130,9 +133,10 @@ func TestReservedPathsRejectWrongMethod(t *testing.T) {
 	b, err := balancer.NewBackend("http://127.0.0.1:9001")
 	require.NoError(t, err)
 	pool := balancer.NewPool([]*balancer.Backend{b})
-	admin := newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second)
+	m := metrics.New()
+	admin := newAdminAPI(pool, http.DefaultTransport, m, 3, 5*time.Second)
 
-	srv := httptest.NewServer(newMux(pool, admin, metrics.New(), notProxied(t)))
+	srv := httptest.NewServer(newMux(pool, admin, m, notProxied(t)))
 	defer srv.Close()
 
 	// Only methods the path does not implement. DELETE /backends and POST
@@ -142,6 +146,8 @@ func TestReservedPathsRejectWrongMethod(t *testing.T) {
 		"/backends": {http.MethodPut, http.MethodPatch},
 		"/live":     {http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
 		"/ready":    {http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
+		"/admin":    {http.MethodPost, http.MethodPut, http.MethodDelete},
+		"/admin/":   {http.MethodPost, http.MethodPut, http.MethodDelete},
 	}
 	for path, methods := range wrong {
 		for _, method := range methods {
@@ -164,9 +170,10 @@ func TestReservedPathsServeGet(t *testing.T) {
 	b, err := balancer.NewBackend("http://127.0.0.1:9001")
 	require.NoError(t, err)
 	pool := balancer.NewPool([]*balancer.Backend{b})
-	admin := newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second)
+	m := metrics.New()
+	admin := newAdminAPI(pool, http.DefaultTransport, m, 3, 5*time.Second)
 
-	srv := httptest.NewServer(newMux(pool, admin, metrics.New(), notProxied(t)))
+	srv := httptest.NewServer(newMux(pool, admin, m, notProxied(t)))
 	defer srv.Close()
 
 	for path, want := range map[string]int{
@@ -174,6 +181,8 @@ func TestReservedPathsServeGet(t *testing.T) {
 		"/ready":    http.StatusOK,
 		"/backends": http.StatusOK,
 		"/metrics":  http.StatusOK,
+		"/admin":    http.StatusOK,
+		"/admin/":   http.StatusOK,
 	} {
 		assert.Equal(t, want, getStatus(t, srv.URL+path), "GET %s", path)
 	}
@@ -185,7 +194,8 @@ func TestProxyStillCatchAll(t *testing.T) {
 	b, err := balancer.NewBackend("http://127.0.0.1:9001")
 	require.NoError(t, err)
 	pool := balancer.NewPool([]*balancer.Backend{b})
-	admin := newAdminAPI(pool, http.DefaultTransport, 3, 5*time.Second)
+	m := metrics.New()
+	admin := newAdminAPI(pool, http.DefaultTransport, m, 3, 5*time.Second)
 
 	var proxied atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +203,7 @@ func TestProxyStillCatchAll(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	srv := httptest.NewServer(newMux(pool, admin, metrics.New(), handler))
+	srv := httptest.NewServer(newMux(pool, admin, m, handler))
 	defer srv.Close()
 
 	for _, path := range []string{"/", "/hello", "/api/v1/items", "/backends/extra", "/live/deep"} {

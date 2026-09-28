@@ -89,6 +89,14 @@ Usunięty backend znika też z `/metrics` — `Metrics.ForgetBackend` kasuje ser
 
 Dodany backend dostaje współdzielony transport oraz te same parametry breakera co backendy startowe; health checker podchwyci go od następnego cyklu.
 
+### Panel admina `/admin`
+
+`GET /admin` (i `/admin/`) zwraca stronę do konfigurowania backendów z przeglądarki: dodawanie z wagą, usuwanie, podgląd wagi, zdrowia i liczby aktywnych requestów, auto-odświeżanie co 2 s (pauza, gdy karta jest niewidoczna).
+
+Jeden plik `cmd/lb/web/admin.html` wpinany przez `//go:embed`, bez CDN-ów i bez build stepu. Renderuje wyłącznie przez `textContent`, nigdy `innerHTML`, bo URL-e pochodzą z API i nie są zaufanym HTML-em.
+
+Obie ścieżki są rejestrowane celowo — sam wzorzec `/admin` przepuściłby `/admin/` do catch-alla, czyli do backendu. Panel jest tak samo bez autoryzacji jak API za nim; ostrzeżenie renderuje się na stronie.
+
 ## Circuit breaker
 
 Obok pasywnego health checka każdy backend ma **circuit breaker** chroniący przed serią błędów transportu (błędy połączenia, timeouty):
@@ -153,12 +161,12 @@ Ustawienie `-read-timeout` przywraca ucinanie transferu, ale błąd odczytu jest
 
 ## Zakres
 
-W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, testy.
+W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends` + panel `/admin`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, testy.
 
 ## Świadome ograniczenia
 
 - **Domyślnie round-robin bez wag** — wagi są dostępne (`WithWeight` + `AlgorithmWeightedRoundRobin`), ale nie są domyślne; nie ma weighted least-connections (waga nie wpływa na least-connections).
-- **Endpoint `/backends` bez autoryzacji** — wygodny do demo i lokalnego devu; w produkcji wymagałby uwierzytelnienia i ograniczeń (rate limit, dozwolone sieci).
+- **Endpoint `/backends` i panel `/admin` bez autoryzacji** — wygodne do demo i lokalnego devu; w produkcji wymagałyby uwierzytelnienia i ograniczeń (rate limit, dozwolone sieci). Panel jest dodatkowo *wykrywalny* dla człowieka, więc w praktyce podnosi to realne ryzyko: każdy, kto dosięgnie portu, może dopisywać i usuwać backendy.
 - **Retry tylko dla metod idempotentnych i tylko przed wysłaniem bajtów do klienta** — błędy w trakcie streamowania odpowiedzi nie są ponawiane, metody z efektami ubocznymi (`POST`/`PUT`/`PATCH`) nigdy.
 - **Brak retry „w ciemno" w `ErrorHandler`** — retry jest realizowane na poziomie serwera, gdzie wiadomo, czy odpowiedź dotarła już do klienta.
 - **Circuit breaker tylko dla błędów transportu** — progi health checka (`failureThreshold=3`, `successThreshold=2`) i breakera działają niezależnie; kody 5xx z backendu nie otwierają obwodu (są przekazywane dalej).

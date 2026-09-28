@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backendy — panel admina</title>
+<style>
+  /* Jeden plik, zero zaleznosci zewnetrznych. */
+
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16191d;
+    --muted: #6b7280;
+    --line: #e3e6ea;
+    --accent: #2563eb;
+    --ok: #15803d;
+    --ok-bg: #dcfce7;
+    --bad: #b91c1c;
+    --bad-bg: #fee2e2;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #161a21;
+      --ink: #e6e9ee;
+      --muted: #9aa3af;
+      --line: #262c36;
+      --accent: #60a5fa;
+      --ok: #4ade80;
+      --ok-bg: #14532d;
+      --bad: #fca5a5;
+      --bad-bg: #7f1d1d;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 2rem 1rem 4rem;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+  }
+  main { max-width: 62rem; margin: 0 auto; }
+
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1rem; margin: 0; font-weight: 600; }
+  .sub { margin: 0 0 1.5rem; color: var(--muted); }
+
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  form { display: flex; gap: .6rem; flex-wrap: wrap; }
+  input[type=text], input[type=number] {
+    padding: .5rem .65rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--ink);
+    font: inherit;
+  }
+  input[type=text] { flex: 1 1 22rem; min-width: 0; }
+  input[type=number] { width: 6rem; }
+  input:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  button {
+    padding: .5rem 1rem;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:disabled { opacity: .55; cursor: progress; }
+  button.danger { background: transparent; color: var(--bad); border-color: var(--line); }
+  button.danger:hover:not(:disabled) { background: var(--bad-bg); filter: none; }
+
+  .err { color: var(--bad); margin: .6rem 0 0; font-size: .875rem; }
+
+  select, textarea {
+    padding: .5rem .65rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--ink);
+    font: inherit;
+  }
+  select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  textarea { width: 100%; min-height: 4.5rem; margin-top: .6rem; resize: vertical;
+             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+             font-size: .8125rem; }
+
+  .result { margin-top: 1rem; }
+  .result-head { display: flex; gap: .9rem; align-items: baseline; flex-wrap: wrap;
+                 font-size: .875rem; color: var(--muted); }
+  .status { font-weight: 600; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--bad); }
+  pre { margin: .6rem 0 0; padding: .7rem; max-height: 22rem; overflow: auto;
+        background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+        font-size: .8125rem; white-space: pre-wrap; word-break: break-word; }
+  .hint { color: var(--muted); font-size: .8125rem; margin: .6rem 0 0; }
+
+  .head { display: flex; justify-content: space-between; align-items: center;
+          gap: 1rem; margin-bottom: .8rem; flex-wrap: wrap; }
+  .count { color: var(--muted); font-weight: 400; }
+  .auto { display: flex; align-items: center; gap: .4rem; font-size: .875rem;
+          color: var(--muted); cursor: pointer; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .55rem .5rem; border-bottom: 1px solid var(--line); }
+  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em;
+       color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+           font-size: .875rem; word-break: break-all; }
+  td.actions { text-align: right; width: 1%; white-space: nowrap; }
+
+  .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%;
+         margin-right: .4rem; vertical-align: baseline; }
+  .dot.ok { background: var(--ok); }
+  .dot.bad { background: var(--bad); }
+  .state { font-size: .875rem; }
+  .state.ok { color: var(--ok); }
+  .state.bad { color: var(--bad); }
+
+  .empty { color: var(--muted); text-align: center; padding: 1.5rem 0; margin: 0; }
+
+  .toasts { position: fixed; right: 1rem; bottom: 1rem; display: flex;
+            flex-direction: column; gap: .5rem; max-width: min(28rem, calc(100vw - 2rem)); }
+  .toast { padding: .6rem .8rem; border-radius: 6px; font-size: .875rem;
+           border: 1px solid var(--line); background: var(--panel);
+           box-shadow: 0 4px 14px rgb(0 0 0 / .12); }
+  .toast.ok { border-color: var(--ok); color: var(--ok); }
+  .toast.err { border-color: var(--bad); color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Backendy</h1>
+  <p class="sub">Panel administracyjny load balancera. Zmiany działają natychmiast —
+     pula jest aktualizowana w pamięci i nie wymaga restartu.</p>
+
+  <section>
+    <div class="head"><h2>Dodaj backend</h2></div>
+    <form id="add">
+      <input type="text" name="url" placeholder="http://127.0.0.1:9001"
+             autocomplete="off" spellcheck="false" required>
+      <input type="number" name="weight" min="1" step="1" value="1"
+             title="Waga (liczba całkowita &gt;= 1)" required>
+      <button type="submit">Dodaj</button>
+    </form>
+    <p class="err" id="add-err" hidden></p>
+  </section>
+
+  <section>
+    <div class="head">
+      <h2>Zarejestrowane backendy <span class="count" id="count"></span></h2>
+      <label class="auto">
+        <input type="checkbox" id="auto" checked> Odświeżaj co 2 s
+      </label>
+    </div>
+    <table>
+      <thead>
+        <tr><th>URL</th><th class="num">Waga</th><th>Status</th>
+            <th class="num">Aktywne</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p class="empty" id="empty" hidden>Pula jest pusta — dodaj pierwszy backend powyżej.</p>
+  </section>
+
+  <section>
+    <div class="head"><h2>Wyślij request</h2></div>
+    <form id="req">
+      <select name="method" title="Metoda HTTP">
+        <option>GET</option><option>HEAD</option><option>POST</option>
+        <option>PUT</option><option>PATCH</option><option>DELETE</option>
+      </select>
+      <input type="text" name="path" value="/healthz" autocomplete="off"
+             spellcheck="false" placeholder="/ścieżka" required>
+      <button type="submit">Wyślij</button>
+    </form>
+    <textarea name="body" placeholder="Treść żądania (metody z body)" spellcheck="false"></textarea>
+    <p class="hint">Request idzie przez ten sam load balancer co ruch produkcyjny,
+       więc widać również jego wpływ na metryki i logi.</p>
+    <div class="result" id="result" hidden>
+      <div class="result-head">
+        <span class="status" id="res-status"></span>
+        <span id="res-time"></span>
+      </div>
+      <pre id="res-body"></pre>
+    </div>
+  </section>
+</main>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+"use strict";
+
+const $ = (sel) => document.querySelector(sel);
+const rows = $("#rows");
+const emptyBox = $("#empty");
+const countBox = $("#count");
+const addForm = $("#add");
+const addErr = $("#add-err");
+const autoBox = $("#auto");
+
+async function api(method, body) {
+  const res = await fetch("/backends", {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (res.status === 204) return null;
+
+  const text = await res.text();
+  let data = text;
+  try { data = JSON.parse(text); } catch { /* bled zwraca zwykly tekst */ }
+  if (!res.ok) {
+    const msg = typeof data === "string" ? data : JSON.stringify(data);
+    throw new Error(msg.trim() || res.status + " " + res.statusText);
+  }
+  return data;
+}
+
+function toast(msg, kind) {
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.textContent = msg;
+  $("#toasts").append(el);
+  setTimeout(() => el.remove(), kind === "err" ? 7000 : 3000);
+}
+
+function cell(text, cls) {
+  const td = document.createElement("td");
+  if (cls) td.className = cls;
+  // textContent, nie innerHTML — URL z API nie jest zaufanym HTML-em.
+  td.textContent = text;
+  return td;
+}
+
+function render(list) {
+  rows.replaceChildren();
+  for (const b of list) {
+    const tr = document.createElement("tr");
+
+    tr.append(cell(b.url, "url"));
+    tr.append(cell(String(b.weight), "num"));
+
+    const state = document.createElement("td");
+    const dot = document.createElement("span");
+    dot.className = "dot " + (b.healthy ? "ok" : "bad");
+    const label = document.createElement("span");
+    label.className = "state " + (b.healthy ? "ok" : "bad");
+    label.textContent = b.healthy ? "zdrowy" : "niezdrowy";
+    state.append(dot, label);
+    tr.append(state);
+
+    tr.append(cell(String(b.active), "num"));
+
+    const actions = document.createElement("td");
+    actions.className = "actions";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "danger";
+    del.textContent = "Usuń";
+    del.addEventListener("click", () => remove(b.url));
+    actions.append(del);
+    tr.append(actions);
+
+    rows.append(tr);
+  }
+
+  emptyBox.hidden = list.length > 0;
+  countBox.textContent = list.length ? "(" + list.length + ")" : "";
+}
+
+let lastError = null;
+async function refresh() {
+  try {
+    render(await api("GET"));
+    lastError = null;
+  } catch (e) {
+    // Poll co 2 s: nie powtarzaj tego samego toastu w nieskonczonosc.
+    if (e.message !== lastError) {
+      toast("Nie udało się pobrać listy: " + e.message, "err");
+      lastError = e.message;
+    }
+  }
+}
+
+async function remove(url) {
+  if (!confirm("Usunąć backend " + url + "?")) return;
+  try {
+    await api("DELETE", { url });
+    toast("Usunięto " + url, "ok");
+    refresh();
+  } catch (e) {
+    toast(e.message, "err");
+  }
+}
+
+addForm.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  addErr.hidden = true;
+
+  const fd = new FormData(addForm);
+  const url = String(fd.get("url") || "").trim();
+  const weight = Number(fd.get("weight"));
+
+  if (!/^https?:\/\//.test(url)) {
+    addErr.textContent = "URL musi zaczynać się od http:// lub https://";
+    addErr.hidden = false;
+    return;
+  }
+  if (!Number.isInteger(weight) || weight < 1) {
+    addErr.textContent = "Waga musi być całkowitą liczbą >= 1";
+    addErr.hidden = false;
+    return;
+  }
+
+  const btn = addForm.querySelector("button");
+  btn.disabled = true;
+  try {
+    await api("POST", { url, weight });
+    addForm.reset();
+    addForm.weight.value = "1";
+    toast("Dodano " + url, "ok");
+    refresh();
+  } catch (e) {
+    addErr.textContent = e.message;
+    addErr.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+const reqForm = $("#req");
+const result = $("#result");
+
+// Wszystkie odpowiedzi idą do textContent, nigdy innerHTML: backend może
+// zwrócić dowolne bajty i nie mogą stać się markupiem w panelu.
+function showResult(status, ms, text) {
+  const label = status + " " + (statusText(status));
+  $("#res-status").textContent = label;
+  $("#res-status").className = "status " + (status < 400 ? "ok" : "err");
+  $("#res-time").textContent = ms + " ms";
+  $("#res-body").textContent = text;
+  result.hidden = false;
+}
+
+function statusText(code) {
+  return ({ 200: "OK", 201: "Created", 204: "No Content", 400: "Bad Request",
+            404: "Not Found", 405: "Method Not Allowed", 408: "Request Timeout",
+            413: "Payload Too Large", 502: "Bad Gateway", 503: "Service Unavailable",
+            504: "Gateway Timeout" })[code] || "";
+}
+
+reqForm.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+
+  const fd = new FormData(reqForm);
+  const path = String(fd.get("path") || "").trim();
+  if (!path.startsWith("/")) {
+    toast("Ścieżka musi zaczynać się od /", "err");
+    return;
+  }
+
+  const init = { method: fd.get("method"), headers: {} };
+  const payload = String(fd.get("body") || "");
+  if (payload) {
+    init.body = payload;
+    init.headers["Content-Type"] = "application/json";
+  }
+
+  const btn = reqForm.querySelector("button");
+  btn.disabled = true;
+  const started = performance.now();
+  try {
+    const res = await fetch(path, init);
+    const text = await res.text();
+    showResult(res.status, Math.round(performance.now() - started), text);
+  } catch (e) {
+    // fetch rzuca tylko gdy ruch nie doszedł do serwera.
+    showResult(0, Math.round(performance.now() - started), e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+setInterval(() => {
+  // Pauza, gdy karta jest niewidoczna — nie odpytuj w tle.
+  if (autoBox.checked && !document.hidden) refresh();
+}, 2000);
+
+refresh();
+</script>
+</body>
+</html>
