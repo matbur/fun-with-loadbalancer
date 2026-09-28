@@ -108,6 +108,29 @@ func TestBackendCounters(t *testing.T) {
 	assert.Equal(t, 0.0, testutil.ToFloat64(m.backendErrors.WithLabelValues("127.0.0.1:9002")))
 }
 
+// Without this, every backend ever added stays in /metrics forever.
+func TestForgetBackendDropsSeries(t *testing.T) {
+	m := New()
+
+	m.ObserveBackendRequest("127.0.0.1:9001")
+	m.ObserveBackendError("127.0.0.1:9001")
+	m.ObserveBackendRequest("127.0.0.1:9002")
+	require.Equal(t, 1.0, m.BackendRequests("127.0.0.1:9001"))
+
+	m.ForgetBackend("127.0.0.1:9001")
+
+	// Gather never creates a series, so 0 here means "gone".
+	assert.Equal(t, 0.0, m.BackendRequests("127.0.0.1:9001"))
+	assert.Equal(t, 0.0, m.BackendErrors("127.0.0.1:9001"))
+	// Only the named backend is dropped.
+	assert.Equal(t, 1.0, m.BackendRequests("127.0.0.1:9002"))
+}
+
+// Deleting a label value that was never created must not panic.
+func TestForgetBackendOnEmptyRegistry(t *testing.T) {
+	New().ForgetBackend("127.0.0.1:9999")
+}
+
 func TestMetricsEndpointServesPrometheusText(t *testing.T) {
 	m := New()
 

@@ -85,6 +85,8 @@ Jeden cykl sprawdza backendy **równolegle**, ograniczone do `-health-check-para
 - `POST /backends` z ciałem `{"url": "http://localhost:9003", "weight": 1}` — dodaje backend (`201 Created`; `400` — zły URL/JSON; `409` — duplikat URL),
 - `DELETE /backends` z ciałem `{"url": "..."}` — usuwa (`204 No Content`; `404` — brak takiego backendu).
 
+Usunięty backend znika też z `/metrics` — `Metrics.ForgetBackend` kasuje serie `lb_backend_*`. Wartości labeli tylko przybywają, więc bez tego rejestry rosłyby w nieskończoność. Nie chroni to przed klientem, który tylko dodaje i nigdy nie usuwa.
+
 Dodany backend dostaje współdzielony transport oraz te same parametry breakera co backendy startowe; health checker podchwyci go od następnego cyklu.
 
 ## Circuit breaker
@@ -139,7 +141,6 @@ Access log pochodzi z proxy przez opcję `WithLogger` — bez niej (np. w testac
 
 - **Body requestu** (`-max-body-bytes`, domyślnie `1 MiB`; `0` = bez limitu): request z deklarowanym `Content-Length` ponad limit dostaje natychmiast `413`. Body o nieznanej długości (chunked) przerywane jest w trakcie przesyłania przez `http.MaxBytesReader`, a błąd `*http.MaxBytesError` rozpoznawany jest w `clientStatusFor` i mapowany na `413`. Taki błąd jest **błędem klienta** — nie otwiera circuit breakera i nie wyzwala retry (test `TestServeHTTPBodyTooLargeDoesNotTripBreaker`).
 - **Równoległe requesty** (`-max-concurrent`, domyślnie `0` = bez limitu): tokenowy semafor w proxy — przy pełnym limicie nowy request dostaje `503` bez dotykania backendów (access log na poziomie `warn`).
-
 Oba limity dotyczą wyłącznie ruchu proxowanego — endpointy `/metrics`, `/backends`, `/live`, `/ready` im nie podlegają.
 
 ### Timeouty serwera HTTP

@@ -4,7 +4,7 @@ Scope: whole project (all non-test and test Go sources, `README.md`, `examples/l
 Baseline: `go build ./...`, `go vet ./...`, `go test ./...`, `go test -race ./...` all pass.
 Findings below were reproduced with throwaway tests (since removed).
 
-Status: **1–5, 7–9 — fixed** (see the resolution note under each finding). 6 open.
+Status: **1–9 — all fixed** (see the resolution note under each finding). Nothing open.
 
 ---
 
@@ -209,9 +209,9 @@ bounded, cannot misroute or produce spurious 503s, and is strictly an improvemen
 behaviour. The default round-robin scan returns the first candidate it admits and is unaffected.
 Finding 4 narrows the window further: the health checker now closes a stuck circuit on its own.
 
-Still open, deliberately: finding 6 concerns the same passive-vs-active asymmetry from the other side
-(`/ready` reports per-backend state that the proxy already accounts for, but the metrics labels are
-unbounded), and is not addressed here.
+Separately addressed, and not really the same thing: finding 6 was the metrics side of it — the
+`/backends` endpoint could mint unbounded label values. It is fixed independently, by a pool size
+cap plus deleting a backend's series on removal.
 
 ---
 
@@ -344,6 +344,46 @@ removes the series. Since the endpoint is unauthenticated by design, a script (o
 looping over distinct URLs grows registry memory and the `/metrics` payload without bound. Adding
 `backendRequests.DeleteLabelValues(...)` / `Delete(prometheus.Labels{...})` on removal, and/or
 capping the pool size, would bound it.
+
+### Resolution
+
+Fixed by `Metrics.ForgetBackend(backend)` (`internal/metrics/metrics.go`): it calls
+`DeleteLabelValues` on both `CounterVec`s, and `admin.remove` invokes it after a successful
+`RemoveBackend`. So `/metrics` shows only what is actually in the pool, and the value disappears
+instead of counting forever. Reading absence through `BackendRequests`/`BackendErrors` is a valid
+check because `counterValue` goes via `registry.Gather`, which never creates a series.
+
+Tests: `TestForgetBackendDropsSeries`, `TestForgetBackendOnEmptyRegistry`, and
+`TestAdminRemoveDropsMetricSeries` end-to-end, asserting on the scraped `/metrics` text rather than
+on the registry. Measured leak before the fix: `lb_backend_requests_total{backend="127.0.0.1:52520"} 1`
+still present after `DELETE /backends`. Both unit tests and the end-to-end test were confirmed to
+fail with the `ForgetBackend` call sites removed.
+
+What this does *not* fix, stated plainly: a client that only ever adds. Label values are only ever
+added, so `ForgetBackend` bounds the add-then-remove cycle (how the pool is actually used) and keeps
+`/metrics` honest, but nothing stops an unauthenticated caller from accumulating distinct label
+values by never removing. Closing that needs a pool size cap or authentication on the endpoint.
+Documented on `ForgetBackend` rather than left implicit.
+
+A pool size cap was implemented and then removed on request. It was not the fix for this finding —
+`ForgetBackend` is — and the measurement behind it did not support the case for it:
+
+| pool size | round-robin | weighted | least-connections |
+| --- | --- | --- | --- |
+| 10 | 9 ns/op | 45 ns/op | 45 ns/op |
+| 100 | 10 ns/op | 312 ns/op | 442 ns/op |
+| 1 000 | 10 ns/op | 3.0 µs/op | 4.7 µs/op |
+| 10 000 | 10 ns/op | 38.8 µs/op | 47.1 µs/op |
+
+The default algorithm is flat, because `nextRoundRobin` returns the first available candidate
+instead of scanning. Only `nextWeighted` and `nextLeastConnections` are O(N), so the argument for the
+cap held only for non-default algorithms, and it cost a flag, a config key, an error value, a 507
+status, an option on the pool, and seven tests. `nextWeighted` does hold `p.mu` for the whole scan,
+which `AddBackend`/`RemoveBackend` share, but at 10 000 backends the measured add+remove is 69 µs —
+about one `Next()` of contention, not a stall.
+
+If the load balancer is ever exposed beyond loopback, this residual is worth revisiting with a real
+cap rather than bookkeeping.
 
 ---
 

@@ -119,6 +119,17 @@ func (m *Metrics) BackendErrors(backend string) float64 {
 	return m.counterValue("lb_backend_errors_total", "backend", backend)
 }
 
+// ForgetBackend drops every series keyed by backend, so a removed backend stops
+// showing up in /metrics. Label values are only ever added, so without this the
+// registry grows for the life of the process.
+//
+// Partial: covers add-then-remove, not a client that only adds. That needs a
+// pool size cap or authentication.
+func (m *Metrics) ForgetBackend(backend string) {
+	m.backendRequests.DeleteLabelValues(backend)
+	m.backendErrors.DeleteLabelValues(backend)
+}
+
 func (m *Metrics) counterValue(name, label, value string) float64 {
 	families, err := m.registry.Gather()
 	if err != nil {
