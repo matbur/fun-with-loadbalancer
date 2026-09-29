@@ -99,30 +99,33 @@ func slogLevel(name string) slog.Level {
 // after a graceful shutdown and the serve error when the server failed on
 // its own.
 //
-// Waiting on the drain matters: Shutdown first closes the listeners, which
-// makes Serve return http.ErrServerClosed immediately, and only then waits
-// for in-flight requests. Without the shutdownDone wait, the caller would
-// return right after Serve and the process would exit while requests were
-// still being handled.
+// Serve runs on its own goroutine because the caller is what reacts to ctx:
+// there is no other way to start the shutdown while Serve blocks. The drain
+// wait comes from Shutdown itself — it closes the listeners first (which is
+// what makes Serve return http.ErrServerClosed) and only then blocks on
+// in-flight requests. Returning as soon as Serve returns would kill requests
+// that were still being handled.
 func serveUntilShutdown(ctx context.Context, ln net.Listener, srv *http.Server, logger *slog.Logger) error {
-	shutdownDone := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		logger.Info("shutting down")
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
+	select {
+	case err := <-serveErr:
+		return err // the server failed on its own, ctx was never canceled
+	case <-ctx.Done():
+	}
 
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("shutdown failed", "error", err)
-		}
-		close(shutdownDone)
-	}()
+	logger.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	shutdownErr := srv.Shutdown(shutdownCtx) // blocks until the drain finishes
 
-	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+	if err := <-serveErr; !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	<-shutdownDone
+	if shutdownErr != nil {
+		logger.Error("shutdown failed", "error", shutdownErr)
+	}
 	return nil
 }
 
@@ -190,13 +193,13 @@ func main() {
 
 	httpServer := newHTTPServer(cfg, mux)
 
-	logger.Info("listening", "addr", cfg.ListenAddr)
-
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		logger.Error("listen failed", "addr", cfg.ListenAddr, "error", err)
 		os.Exit(1)
 	}
+
+	logger.Info("listening", "addr", ln.Addr().String())
 
 	if err := serveUntilShutdown(ctx, ln, httpServer, logger); err != nil {
 		logger.Error("server error", "error", err)
