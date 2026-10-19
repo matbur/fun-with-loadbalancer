@@ -1,0 +1,12 @@
+apiVersion: v2
+name: load-balancer
+description: HTTP load balancer in Go - reverse proxy with round-robin, weighted round-robin and least-connections, active health checks, a circuit breaker, Prometheus metrics, an admin panel and a dynamic backends API.
+type: application
+version: 0.1.0
+# No released image exists yet; the default tag matches docker-compose/Makefile.
+appVersion: "dev"
+keywords:
+  - load-balancer
+  - reverse-proxy
+  - http
+  - golang

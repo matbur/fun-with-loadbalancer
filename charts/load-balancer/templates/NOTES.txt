@@ -1,0 +1,54 @@
+{{- $svc := include "lb.fullname" . }}
+The load balancer is installed as {{ $svc }} in namespace {{ .Release.Namespace }}.
+
+Reach it from your machine:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $svc }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  open http://localhost:{{ .Values.service.port }}/admin
+
+{{- if .Values.demoBackends.enabled }}
+
+Backends in the pool ({{ include "lb.backendCount" . }}), served by traefik/whoami:
+
+{{- range $i := until (int .Values.demoBackends.count) }}
+  - http://{{ $svc }}-demo-{{ add $i 1 }}:{{ $.Values.demoBackends.servicePort }}
+{{- end }}
+
+Watch round-robin in the response bodies - whoami names itself:
+
+  for i in 1 2 3 4; do curl -s http://localhost:{{ .Values.service.port }}/ | head -1; done
+
+{{- else }}
+
+Backends in the pool ({{ include "lb.backendCount" . }}), as configured in config.backends:
+
+{{- range .Values.config.backends }}
+  - {{ . }}
+{{- end }}
+
+{{- end }}
+
+Check the wiring:
+
+  kubectl -n {{ .Release.Namespace }} get pods,svc
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ $svc }}
+  kubectl -n {{ .Release.Namespace }} get cm {{ $svc }} -o jsonpath='{.data.lb\.yaml}'
+
+That last one shows the mounted config from the ConfigMap - `kubectl exec` cannot
+read the file inside the container, because the image is distroless and ships
+neither a shell nor a `cat` binary.
+
+Run the probe check the chart ships with:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if gt (int .Values.replicaCount) 1 }}
+
+{{ int .Values.replicaCount }} replicas: each one runs its own pool, health checks and
+circuit breakers, and the Service balances per connection - so weights apply
+within a replica, not across the fleet.
+{{- end }}
+{{- if not (has "json" (list .Values.config.log_format)) }}
+
+log_format is not json. Cluster log collectors parse JSON, which is why the
+chart defaults to it; logs will be plain text in kubectl logs.
+{{- end }}

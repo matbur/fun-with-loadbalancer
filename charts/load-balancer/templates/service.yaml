@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "lb.fullname" . }}
+  labels:
+    {{- include "lb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: load-balancer
+  {{- if or .Values.service.annotations .Values.commonAnnotations }}
+  annotations:
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      appProtocol: http
+  selector:
+    {{- include "lb.selectorLabels" . | nindent 4 }}
+    # Component must be part of the selector, not only of the pod labels:
+    # without it the two labels above also match the demo backend pods (they
+    # carry lb.labels too), and the Service would balance straight to them,
+    # bypassing the load balancer.
+    app.kubernetes.io/component: load-balancer

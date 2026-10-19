@@ -1,0 +1,79 @@
+{{- if .Values.demoBackends.enabled }}
+{{- $root := include "lb.fullname" . }}
+{{- range $i := until (int .Values.demoBackends.count) }}
+{{- $name := printf "%s-demo-%d" $root (add $i 1) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "lb.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: demo-backend
+  {{- with $.Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $.Values.demoBackends.servicePort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "lb.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: demo-backend
+    demo-backend/name: {{ $name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "lb.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: demo-backend
+  {{- with $.Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "lb.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: demo-backend
+      demo-backend/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "lb.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: demo-backend
+        demo-backend/name: {{ $name }}
+    spec:
+      containers:
+        - name: whoami
+          image: "{{ $.Values.demoBackends.image }}:{{ $.Values.demoBackends.tag }}"
+          imagePullPolicy: {{ $.Values.demoBackends.pullPolicy }}
+          # whoami names itself, which is what makes round-robin visible in the
+          # response body instead of only in the load balancer's access log.
+          args:
+            - --name={{ $name }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          # The same endpoint the load balancer's health checker probes, so the
+          # pod only becomes ready once it would also be considered healthy.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml $.Values.demoBackends.resources | nindent 12 }}
+{{- end }}
+{{- end }}

@@ -2,7 +2,10 @@ BACKENDS ?= http://localhost:9001,http://localhost:9002
 LISTEN ?= :8080
 BACKEND_PORT ?= 9001
 
-.PHONY: help run backend test test-race test-repeat vet docker-build docker-up docker-down
+CHART ?= charts/load-balancer
+RELEASE ?= lb
+
+.PHONY: help run backend test test-race test-repeat vet docker-build docker-up docker-down helm-lint helm-template
 
 help: ## show available targets
 	@printf "Available targets:\n"
@@ -34,3 +37,9 @@ docker-up: ## start the load balancer and two demo backends
 
 docker-down: ## stop the demo stack
 	docker compose down
+
+helm-lint: ## lint the Helm chart
+	helm lint $(CHART)
+
+helm-template: ## render the Helm chart with default values
+	helm template $(RELEASE) $(CHART)

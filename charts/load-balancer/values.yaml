@@ -1,0 +1,194 @@
+# Default values for the load-balancer chart.
+#
+# The load balancer is configured through a ConfigMap rendered from the `config`
+# block below, not through flags: the file format carries lists (backends,
+# weights) that -backends/-weights can only take as a comma-separated string.
+# Set a value to null to leave it out of the file, and the binary's own default
+# applies.
+
+replicaCount: 1
+
+image:
+  repository: fun-with-loadbalancer
+  # No registry push exists yet - build locally (make docker-build) and load the
+  # image into the cluster nodes, or point repository at your own registry.
+  tag: dev
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Labels and annotations added to every object the chart creates.
+commonLabels: {}
+commonAnnotations: {}
+
+config:
+  # Backends to route to, as scheme://host:port. Leave empty and the demo
+  # backends below are used instead, so `helm install` works with no values at
+  # all - the same idea as the two traefik/whoami services in docker-compose.yml.
+  backends: []
+  #   - http://orders.default.svc.cluster.local:8080
+  #   - http://payments.default.svc.cluster.local:8080
+
+  # One weight per backend, in the same order. Only used by
+  # algorithm: weighted-round-robin; leave empty for weight 1 everywhere.
+  weights: []
+
+  # ":8080" binds every interface, which is what a pod wants. Changing the port
+  # here also moves containerPort - the chart derives it from this value.
+  listen: ":8080"
+
+  # round-robin | weighted-round-robin | least-connections
+  algorithm: round-robin
+
+  # GET /healthz on every backend, this often, with this per-backend timeout.
+  health_check_every: 10s
+  health_check_timeout: 2s
+  # How many backends one cycle probes at once (0 = no cap). A cycle slower than
+  # health_check_every makes the real interval the cycle duration.
+  health_check_parallelism: 16
+
+  # Per-backend circuit breaker, on transport errors only - not on 5xx responses.
+  breaker_threshold: 3
+  breaker_cooldown: 5s
+
+  # json, not the binary's text default: cluster log collectors parse JSON, and
+  # every field you see in kubectl logs is a label there.
+  log_format: json
+  log_level: info
+
+  # Request limits, proxied traffic only. 0 means unlimited.
+  max_body_bytes: 1048576
+  max_concurrent: 0
+  # Both 0 by default on purpose: the body is bounded by max_body_bytes rather
+  # than by a clock, so a read deadline would cut uploads short and turn them
+  # into 408 instead of the documented 413.
+  read_timeout: 0s
+  write_timeout: 0s
+
+  # Escape hatch for config keys this chart does not render yet. Keys already
+  # rendered above are ignored here, because a duplicate mapping key is a YAML
+  # parse error and the binary would refuse to start.
+  extra: {}
+
+# Flags appended after -config. The binary merges them as
+# "explicitly set flags > file > defaults", so anything here overrides the
+# ConfigMap.
+extraArgs: []
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# The load balancer keeps no state on disk, but every replica runs its own pool,
+# its own health checks and its own circuit breakers. The Service load-balances
+# per connection, so with replicas > 1 the algorithms and weights apply within
+# a replica, not across the fleet. Scale up for availability, not for balance.
+updateStrategy: {}
+# type: RollingUpdate
+# rollingUpdate:
+#   maxUnavailable: 0
+#   maxSurge: 1
+
+# The process drains in-flight requests for up to 10s before exiting
+# (shutdownTimeout in cmd/lb/main.go). terminationGracePeriodSeconds has to be
+# comfortably above that, or SIGKILL cuts the drain and clients see 502.
+terminationGracePeriodSeconds: 30
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # The load balancer never talks to the Kubernetes API, so the token is not
+  # mounted. Note that no preStop hook is used: the image is distroless, so
+  # there is no shell and no sleep binary to run one with.
+  automountServiceAccountToken: false
+
+# Mirrors what compose does (read_only, cap_drop: ALL, no-new-privileges) plus
+# the pod-level runAsNonRoot and seccomp profile a restricted namespace wants.
+# The UID is left to the image, which ships USER nonroot (65532).
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Complete probe specs, editable here. /live only reports that the process runs;
+# /ready reports whether at least one backend can take traffic, so a pod is not
+# sent requests while its backends are down. Backends start marked healthy, so a
+# fresh pod is Ready immediately - readiness is optimistic at startup and only
+# bites once the checker has seen 3 consecutive failed cycles (~3 * the
+# health_check_every interval); recovery back to healthy needs 2 successes.
+livenessProbe:
+  httpGet:
+    path: /live
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 1
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# The load balancer is usually the edge of the cluster, so an ingress in front
+# of it is a deliberate choice - useful for TLS termination or for publishing
+# the admin panel on its own host, not for routing client traffic.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  path: /
+  pathType: Prefix
+  tls: []
+  # - secretName: lb-tls
+  #   hosts:
+  #     - lb.example.com
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# Two traefik/whoami pods, the k8s counterpart of the two whoami services in
+# docker-compose.yml. whoami answers on every path, so the /healthz probe
+# passes, and it names itself in the response body, so round-robin is visible
+# in the response and not only in the log. Not hardened: whoami binds port 80,
+# so it cannot run as nonroot.
+demoBackends:
+  enabled: true
+  count: 2
+  image: traefik/whoami
+  tag: v1.12.0
+  pullPolicy: IfNotPresent
+  servicePort: 80
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi

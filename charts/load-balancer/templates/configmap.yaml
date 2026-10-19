@@ -1,0 +1,19 @@
+{{/*
+The load balancer's configuration, mounted at /etc/lb and read with -config.
+A change here does not restart the pod on its own, so the Deployment carries a
+checksum of this file as a pod annotation (see deployment.yaml).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lb.fullname" . }}
+  labels:
+    {{- include "lb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: load-balancer
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  lb.yaml: |
+    {{- include "lb.configFile" . | trim | nindent 4 }}

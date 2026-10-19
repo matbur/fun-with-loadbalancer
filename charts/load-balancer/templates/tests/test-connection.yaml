@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "lb.fullname" . }}-test-connection"
+  labels:
+    {{- include "lb.labels" . | nindent 4 }}
+    # Component is part of the Service selector (see service.yaml), so without
+    # a distinct value here the test pod would join the Service's endpoints and
+    # swallow requests hashed onto it while the test runs.
+    app.kubernetes.io/component: helm-test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  restartPolicy: Never
+  containers:
+    # The load balancer image is distroless - no shell, no wget - so the check
+    # runs from a throwaway busybox pod against the Service.
+    - name: probes
+      image: busybox:1.36
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "GET /live"
+          wget -qO- "http://{{ include "lb.fullname" . }}:{{ .Values.service.port }}/live"
+          # A 503 here is a real problem, not a startup artifact: backends start
+          # marked healthy, so /ready answers 200 from process start. A 503
+          # means every backend has since failed 3 consecutive check cycles -
+          # under `set -e` wget exits non-zero and the test fails, as it should.
+          echo "GET /ready"
+          wget -qO- "http://{{ include "lb.fullname" . }}:{{ .Values.service.port }}/ready"
+          echo "GET /metrics"
+          wget -qO- "http://{{ include "lb.fullname" . }}:{{ .Values.service.port }}/metrics" | head -n 5
+          echo "GET /backends"
+          wget -qO- "http://{{ include "lb.fullname" . }}:{{ .Values.service.port }}/backends"

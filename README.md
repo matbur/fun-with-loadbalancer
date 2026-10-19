@@ -161,7 +161,7 @@ Ustawienie `-read-timeout` przywraca ucinanie transferu, ale błąd odczytu jest
 
 ## Zakres
 
-W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends` + panel `/admin`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, obraz kontenerowy, testy.
+W zakresie: proxy HTTP, algorytmy (round-robin, weighted round-robin, least-connections), health checki, circuit breaker, timeouty, retry dla metod idempotentnych, dynamiczne backendy (endpoint `/backends` + panel `/admin`), limity body i równoległości, graceful shutdown, metryki Prometheus, structured logging, obraz kontenerowy, chart Helm, testy.
 
 ## Świadome ograniczenia
 
@@ -257,6 +257,48 @@ docker buildx build --builder multi \
 Wariant B sprawdzony: `lb-multi.tar` ma manifesty dla obu architektur. Pojedynczą platformę buduje zwykły `docker build --platform`.
 
 Świadomie **bez `HEALTHCHECK`** w obrazie: distroless nie ma `wget` ani `curl`, a healthcheck i tak musiałby być osobną binarką. Są za to `/live` i `/ready`, wystarczające orkiestratorowi — w compose nie ma healthchecka z tego samego powodu.
+
+## Helm
+
+Chart w [`charts/load-balancer`](charts/load-balancer) (pełny opis: [chart README](charts/load-balancer/README.md)):
+
+```bash
+helm install lb charts/load-balancer
+kubectl port-forward svc/lb-load-balancer 8080:8080
+open http://localhost:8080/admin
+```
+
+Bez żadnych wartości chart podnosi **dwa backendy `traefik/whoami`** — odpowiednik dwóch serwisów whoami z compose, więc round-robin widać w ciele odpowiedzi:
+
+```bash
+for i in 1 2 3 4; do curl -s http://localhost:8080/ | head -1; done
+```
+
+Dla ruchu produkcyjnego wyłącza się je i podaje własne backendy:
+
+```bash
+helm install lb charts/load-balancer \
+  --set demoBackends.enabled=false \
+  --set 'config.backends={http://orders.default.svc.cluster.local:8080,http://payments.default.svc.cluster.local:8080}' \
+  --set config.algorithm=weighted-round-robin
+```
+
+Konfiguracja trafia do **ConfigMap**, nie do flag: format pliku (`-config`) niesie listy (`backends`, `weights`), których flagi `-backends`/`-weights` wyrażają tylko jako string rozdzielony przecinkami. Wszystkie klucze leżą pod `config`, zgodnie z `examples/lb.yaml`. Wartość `null` oznacza „pomiń w pliku" i wtedy działa domyślna wartość binarki; `config.extra` przepuszcza klucze, których chart jeszcze nie zna. Suma kontrolna configu jest wypisana w annotacji poda, więc zmiana konfiguracji robi rollout zamiast cicho nic nie robić.
+
+Chart jest na tyle wierny obrazowi, że przejmuje uszczelnienia z compose (`runAsNonRoot`, `readOnlyRootFilesystem`, `drop: ALL`) i nie montuje tokenu ServiceAccount — load balancer nie dzwoni do API Kubernetes. Świadomie **bez hooka `preStop`**: obraz jest distroless, więc nie ma shella ani `sleepa`, którego można by tam uruchomić.
+
+Dwie wartości, które łatwo ustawić źle:
+
+- **`terminationGracePeriodSeconds: 30`** — proces drenażuje żądania do 10s (`shutdownTimeout` w `cmd/lb/main.go`). Poniżej tego `SIGKILL` ucina drenaż i klienci widzą `502`.
+- **`replicaCount`** — każda replika ma własny pool, własne health checki i własne breakery, a Service rozkłada ruch **per połączenie**. Wagi działają wewnątrz repliki, nie w skali całego fleet'u, więc skalowanie służy dostępności, a nie balansowaniu.
+
+Liveness to `/live`, readiness `/ready` — czyli pod ze zepsutymi backendami znika z Service zamiast odpowiadać `503`. Świeży pod jest od razu Gotowy: backendy startują oznaczone jako zdrowe, więc `/ready` zwraca `200` od pierwszej milisekundy. Readiness jest tu optymistyczne na starcie i zaczyna działać dopiero po trzech nieudanych cyklach health checka (`failureThreshold = 3`, czyli ~30 s przy domyślnym `health_check_every: 10s`). Próg dwóch sukcesów z rzędu dotyczy powrotu: backend już oznaczony jako zepsuty potrzebuje dwóch udanych prób, zanim `/ready` znów zwróci `200`.
+
+```bash
+make helm-lint                  # helm lint
+make helm-template              # helm template z domyślnymi wartościami
+helm test lb                    # hook testowy: /live, /ready, /metrics, /backends
+```
 
 ## Konfiguracja YAML/JSON
 
